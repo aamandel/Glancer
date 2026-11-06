@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import Iterator
 
 import pytest
 from PySide6.QtCore import QSettings
@@ -25,15 +24,6 @@ def settings(tmp_path: Path) -> Settings:
     return Settings(QSettings(str(tmp_path / "glancer.ini"), QSettings.Format.IniFormat))
 
 
-@pytest.fixture
-def window(qapp, settings: Settings) -> Iterator[MainWindow]:  # type: ignore[no-untyped-def]
-    win = MainWindow(settings=settings)
-    win.resize(800, 560)
-    win.show()
-    process_events(0.2)
-    yield win
-    win.close()
-    process_events(0.1)
 
 
 def load(window: MainWindow, path: Path) -> MediaKind:

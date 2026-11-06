@@ -32,6 +32,8 @@ MAX_PENDING_STEPS = 8
 # unblock the queue after this long.
 STEP_WATCHDOG_MS = 1500
 
+SPEEDS = (0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0)
+
 
 def _mpv_options(volume: int, muted: bool) -> dict[str, Any]:
     return {
@@ -75,6 +77,10 @@ class MpvPlayer(QObject):
     mute_changed = Signal(bool)
     video_size_changed = Signal(int, int)  # display width/height after rotation
     step_finished = Signal()
+    speed_changed = Signal(float)
+    loop_changed = Signal(bool)
+    rotation_changed = Signal(int)  # view rotation in degrees (0/90/180/270)
+    metadata_changed = Signal(object)  # dict of lower-cased tag names
 
     def __init__(self, volume: int, muted: bool, parent: QObject | None = None):
         super().__init__(parent)
@@ -86,6 +92,10 @@ class MpvPlayer(QObject):
         self._paused = True
         self._pending_steps = 0
         self._step_in_flight = False
+        self._speed = 1.0
+        self._loop_choice = False  # the user's loop setting for videos/audio
+        self._loop = False
+        self._rotation = 0
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.setInterval(STEP_WATCHDOG_MS)
@@ -94,7 +104,7 @@ class MpvPlayer(QObject):
         self._bridge: ThreadBridge[tuple[str, object]] = ThreadBridge(self._on_bridge_items, self)
         self._mpv = mpv.MPV(**_mpv_options(volume, muted))
 
-        for name in ("duration", "time-pos", "pause", "volume", "mute", "video-params"):
+        for name in ("duration", "time-pos", "pause", "volume", "mute", "video-params", "metadata"):
             self._mpv.observe_property(name, self._forwarder(name))
 
         @self._mpv.event_callback("playback-restart", "file-loaded", "end-file")
@@ -151,6 +161,9 @@ class MpvPlayer(QObject):
                 if int(value.get("rotate") or 0) % 180 == 90:
                     width, height = height, width
                 self.video_size_changed.emit(width, height)
+        elif name == "metadata":
+            tags = value if isinstance(value, dict) else {}
+            self.metadata_changed.emit({str(k).lower(): str(v) for k, v in tags.items()})
         elif name == "event:playback-restart":
             if self._step_in_flight:
                 self._step_done()
@@ -200,6 +213,23 @@ class MpvPlayer(QObject):
     def get_property(self, name: str) -> Any:
         return self._mpv._get_property(name)
 
+    @property
+    def speed(self) -> float:
+        return self._speed
+
+    @property
+    def loop(self) -> bool:
+        return self._loop
+
+    @property
+    def rotation(self) -> int:
+        return self._rotation
+
+    def has_video_track(self) -> bool:
+        """True if the loaded file has a picture (for audio: cover art)."""
+        tracks = self._mpv._get_property("track-list") or []
+        return any(t.get("type") == "video" for t in tracks)
+
     # -- loading --------------------------------------------------------------
 
     def load(self, path: Path) -> bool:
@@ -218,7 +248,9 @@ class MpvPlayer(QObject):
         self._kind = kind
         self._duration = 0.0
         self._position = 0.0
-        self._mpv.loop_file = "inf" if kind is MediaKind.ANIMATED else "no"
+        # Animations always start looping; videos and audio keep the user's choice.
+        self._apply_loop(kind is MediaKind.ANIMATED or self._loop_choice)
+        self.set_rotation(0)  # rotation is a per-file view setting
         # Videos, audio and animations start playing, like other media players.
         self._mpv.pause = kind is MediaKind.IMAGE
         self._mpv.loadfile(str(path), "replace")
@@ -239,11 +271,13 @@ class MpvPlayer(QObject):
     def set_paused(self, paused: bool) -> None:
         self._mpv.pause = paused
 
-    def seek(self, seconds: float) -> None:
+    def seek(self, seconds: float, exact: bool = True) -> None:
+        """Seek to a time. exact=False lands on a nearby keyframe (fast scrubbing)."""
         if self._kind is None or not self._kind.has_timeline:
             return
         self._cancel_steps()
-        self._mpv.command_async("seek", max(0.0, seconds), "absolute+exact")
+        mode = "absolute+exact" if exact else "absolute+keyframes"
+        self._mpv.command_async("seek", max(0.0, seconds), mode)
 
     def seek_relative(self, delta: float) -> None:
         if self._kind is None or not self._kind.has_timeline:
@@ -289,6 +323,50 @@ class MpvPlayer(QObject):
         self._pending_steps = 0
         self._step_in_flight = False
         self._watchdog.stop()
+
+    # -- speed, loop, rotation -------------------------------------------------
+
+    def set_speed(self, speed: float) -> None:
+        self._speed = max(SPEEDS[0], min(SPEEDS[-1], float(speed)))
+        self._mpv.speed = self._speed
+        self.speed_changed.emit(self._speed)
+
+    def change_speed(self, direction: int) -> None:
+        """Move to the next faster (+1) or slower (-1) preset speed."""
+        if direction > 0:
+            faster = [s for s in SPEEDS if s > self._speed + 1e-6]
+            if faster:
+                self.set_speed(faster[0])
+        else:
+            slower = [s for s in SPEEDS if s < self._speed - 1e-6]
+            if slower:
+                self.set_speed(slower[-1])
+
+    def set_loop(self, loop: bool) -> None:
+        if self._kind is not MediaKind.ANIMATED:
+            self._loop_choice = loop
+        self._apply_loop(loop)
+
+    def _apply_loop(self, loop: bool) -> None:
+        self._loop = loop
+        self._mpv.loop_file = "inf" if loop else "no"
+        self.loop_changed.emit(loop)
+
+    def set_rotation(self, degrees: int) -> None:
+        self._rotation = degrees % 360
+        self._mpv.video_rotate = self._rotation
+        self.rotation_changed.emit(self._rotation)
+
+    def rotate(self, degrees: int) -> None:
+        self.set_rotation(self._rotation + degrees)
+
+    def set_video_margins(self, left: float, top: float, right: float, bottom: float) -> None:
+        """Reserve fractions of the view so the picture is drawn inside the rest."""
+        m = self._mpv
+        m.video_margin_ratio_left = left
+        m.video_margin_ratio_top = top
+        m.video_margin_ratio_right = right
+        m.video_margin_ratio_bottom = bottom
 
     # -- volume ---------------------------------------------------------------
 

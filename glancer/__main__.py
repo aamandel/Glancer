@@ -10,6 +10,10 @@ def main() -> int:
     app.setApplicationName("Glancer")
     app.setOrganizationName("Glancer")
 
+    from glancer.ui.theme import apply_theme
+
+    apply_theme(app)  # parented to the app, so it lives as long as the app
+
     try:
         from glancer.main_window import MainWindow
     except RuntimeError as exc:  # LibmpvMissingError

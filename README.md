@@ -4,18 +4,28 @@ Glancer is a private, fast Windows viewer for videos, photos, and audio, with
 frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
 no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
-> Glancer is under active development (formerly **FrameStepper**). It currently
-> plays videos, photos and audio with frame stepping; the new interface is next.
+> Glancer is under active development (formerly **FrameStepper**). It plays
+> videos, photos and audio with frame stepping and a floating overlay; zoom,
+> navigation and editing are next.
 
 ## Controls
 
-| Action | Button | Keyboard |
+The controls float over the media and fade out after 2 seconds without mouse
+movement (audio controls stay visible).
+
+| Action | Mouse | Keyboard |
 | --- | --- | --- |
-| Open file | Open file | Ctrl+O |
-| Play or pause | Play/Pause | Space |
-| Previous / next frame (video) | One frame | Left / Right arrow, comma / period |
-| Seek 5 s back / forward (audio) | — | Left / Right arrow |
-| Seek | Drag the scrub bar | — |
+| Open file | Open file button, ≡ menu | Ctrl+O |
+| Play or pause | Click the media, ▶ button | Space |
+| Previous / next frame (video) | Frame buttons | Left / Right arrow, comma / period |
+| Seek 5 s back / forward (audio) | ⏪ / ⏩ buttons | Left / Right arrow |
+| Seek | Click or drag the scrub bar | — |
+| Fullscreen | Double-click the media, ⛶ button | F11 (Esc exits) |
+| Hide controls until H or a click | — | H |
+| Volume / mute | Slider, speaker button, Ctrl+wheel | M (mute) |
+| Speed | 1× button | [ and ] (Backspace resets) |
+| Loop | Loop button | L |
+| Rotate view | ⟳ button (photos), ≡ menu | R / Shift+R |
 
 ## Third-party binaries
 
@@ -48,7 +58,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 14 tests, ~10 s; needs a desktop session (opens windows)
+python -m pytest -q   # 18 tests, ~17 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application
