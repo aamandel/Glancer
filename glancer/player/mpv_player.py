@@ -360,6 +360,13 @@ class MpvPlayer(QObject):
     def rotate(self, degrees: int) -> None:
         self.set_rotation(self._rotation + degrees)
 
+    def frame_number(self) -> int:
+        return int(self._mpv._get_property("estimated-frame-number") or 0)
+
+    def save_frame(self, path: Path) -> None:
+        """Write the current frame at its original resolution, without overlays."""
+        self._mpv.command("screenshot-to-file", str(path), "video")
+
     def set_view_transform(self, zoom_log2: float, pan_x: float, pan_y: float) -> None:
         """mpv's video-zoom (log2 scale) and video-pan (fractions of the shown size)."""
         m = self._mpv

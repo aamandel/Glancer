@@ -15,7 +15,19 @@ from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QObject, QPointF, Qt, QTimer, Signal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QVBoxLayout, QWidget
+import html
+
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from glancer.ui.theme import DIM_TEXT, Glyph, TEXT, icon_font
 
@@ -204,3 +216,100 @@ class AudioInfo(QWidget):
             self.icon.setFont(icon_font(max(24, art_height * 0.32)))
         self.icon.setGeometry(0, 0, width, art_height)
         self.caption.setGeometry(16, art_height + 8, width - 32, caption_height)
+
+
+class InfoPanel(QWidget):
+    """File details on the right side of the media; "Show all tags" expands raw tags."""
+
+    closed = Signal()
+
+    WIDTH = 340
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("InfoPanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 12, 8, 12)
+        outer.setSpacing(8)
+
+        header = QHBoxLayout()
+        title = QLabel("File info", self)
+        title.setObjectName("InfoTitle")
+        close = QToolButton(self)
+        close.setText(Glyph.CLOSE)
+        close.setFont(icon_font(10))
+        close.setToolTip("Close (I)")
+        close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        close.clicked.connect(self.closed)
+        header.addWidget(title, 1)
+        header.addWidget(close)
+        outer.addLayout(header)
+
+        self.scroll = QScrollArea(self)
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        body = QWidget(self.scroll)
+        body.setObjectName("InfoBody")
+        self._body = QVBoxLayout(body)
+        self._body.setContentsMargins(0, 0, 8, 0)
+        self._body.setSpacing(10)
+        self.basic = QLabel(body)
+        self.raw_toggle = QToolButton(body)
+        self.raw_toggle.setText("Show all tags")
+        self.raw_toggle.setCheckable(True)
+        self.raw_toggle.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.raw = QLabel(body)
+        for label in (self.basic, self.raw):
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            label.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        self.raw.hide()
+        self._body.addWidget(self.basic)
+        self._body.addWidget(self.raw_toggle, 0, Qt.AlignmentFlag.AlignLeft)
+        self._body.addWidget(self.raw)
+        self._body.addStretch(1)
+        self.scroll.setWidget(body)
+        outer.addWidget(self.scroll, 1)
+        self.raw_toggle.toggled.connect(self._toggle_raw)
+        self.hide()
+
+    @staticmethod
+    def _breakable(text: str) -> str:
+        """Escape for HTML and allow line breaks after path separators."""
+        zero_width_space = "&#8203;"
+        escaped = html.escape(text)
+        return escaped.replace("\\", "\\" + zero_width_space).replace("/", "/" + zero_width_space)
+
+    @staticmethod
+    def _rows(pairs: list[tuple[str, str]]) -> str:
+        rows = "".join(
+            f"<tr><td style='color:{DIM_TEXT}; padding:2px 12px 2px 0'>{html.escape(k)}</td>"
+            f"<td style='padding:2px 0'>{InfoPanel._breakable(v)}</td></tr>"
+            for k, v in pairs
+        )
+        return f"<table>{rows}</table>"
+
+    def show_loading(self) -> None:
+        self.basic.setText(f"<span style='color:{DIM_TEXT}'>Reading…</span>")
+        self.raw.setText("")
+
+    def set_info(self, basic: list[tuple[str, str]], raw: list[tuple[str, str]]) -> None:
+        self.basic.setText(self._rows(basic))
+        self.raw.setText(self._rows(raw) if raw else "No tags in this file.")
+
+    def _toggle_raw(self, shown: bool) -> None:
+        self.raw.setVisible(shown)
+        self.raw_toggle.setText("Hide all tags" if shown else "Show all tags")
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        event.accept()  # clicks on the panel never reach the media
+
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        event.accept()
+
+    def wheelEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        event.accept()  # never zoom or change volume through the panel

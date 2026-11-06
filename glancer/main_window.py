@@ -35,23 +35,42 @@ from PySide6.QtCore import (
     Signal,
 )
 from PySide6.QtGui import QActionGroup, QCloseEvent, QKeyEvent, QResizeEvent, QWheelEvent
+import threading
+
 from PySide6.QtWidgets import (
     QApplication,
-    QFileDialog,
     QGraphicsOpacityEffect,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QWidget,
 )
 
 from glancer.explorer_sort import ExplorerSortQuery
 from glancer.folder import FolderNavigator
-from glancer.media_types import MediaKind, open_dialog_filter
+from glancer.file_ops import (
+    RecycleError,
+    can_recycle,
+    frame_filename,
+    move_to_recycle_bin,
+    show_in_explorer,
+)
+from glancer.media_types import MediaKind
+from glancer.metadata import FileInfo, read_info
+from glancer.player.thread_bridge import ThreadBridge
+from glancer.win.file_dialog import get_open_path
 from glancer.player.mpv_player import MpvPlayer
 from glancer.player.view import GlancerView
 from glancer.settings import Settings, SortKey, SortOrder
 from glancer.ui.control_bar import ControlBar
-from glancer.ui.overlays import AudioInfo, ClickClassifier, EmptyState, Toast, ZoomBadge
+from glancer.ui.overlays import (
+    AudioInfo,
+    ClickClassifier,
+    EmptyState,
+    InfoPanel,
+    Toast,
+    ZoomBadge,
+)
 from glancer import zoom
 from glancer.zoom import ZoomState
 
@@ -136,6 +155,11 @@ class MainWindow(QMainWindow):
         for child in [self.bar, *self.bar.findChildren(QWidget)]:
             child.setMouseTracking(True)
         self.zoom_badge = ZoomBadge(self.media_area)
+        self.info_panel = InfoPanel(self.media_area)
+        self.info_panel.closed.connect(self.toggle_info)
+        self._info_bridge: ThreadBridge[tuple[Path, FileInfo | None]] = ThreadBridge(
+            self._info_ready, self
+        )
         self.toast = Toast(self.media_area)
 
         self._bar_opacity = QGraphicsOpacityEffect(self.bar)
@@ -191,6 +215,9 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         # Shortcut text after a tab is only displayed; keys are handled in keyPressEvent.
         menu.addAction("Open…\tCtrl+O", self.open_file_dialog)
+        self._explorer_action = menu.addAction("Show in Explorer", self.show_in_explorer)
+        self._info_action = menu.addAction("File info\tI", self.toggle_info)
+        self._save_frame_action = menu.addAction("Save frame as PNG", self.save_frame)
         menu.addSeparator()
         self._rotate_right = menu.addAction("Rotate right\tR", lambda: self.player.rotate(90))
         self._rotate_left = menu.addAction("Rotate left\tShift+R", lambda: self.player.rotate(-90))
@@ -199,7 +226,19 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         menu.addAction("Hide controls\tH", self.toggle_overlay_lock)
         menu.addAction("Fullscreen\tF11", self.toggle_fullscreen)
+        menu.addSeparator()
+        self._delete_action = menu.addAction("Delete\tDel", self.delete_current)
+        menu.aboutToShow.connect(self._refresh_menu)
         return menu
+
+    def _refresh_menu(self) -> None:
+        has_file = self.player.path is not None
+        for action in (self._explorer_action, self._info_action, self._delete_action,
+                       self._rotate_left, self._rotate_right):
+            action.setEnabled(has_file)
+        self._save_frame_action.setEnabled(
+            self.player.kind is not None and self.player.kind.has_frames
+        )
 
     def _build_sort_menu(self) -> QMenu:
         menu = QMenu("Sort order", self)
@@ -243,7 +282,9 @@ class MainWindow(QMainWindow):
             (K.Key_Comma, False, False): lambda: p.step(-1),
             (K.Key_O, False, True): self.open_file_dialog,
             (K.Key_F11, False, False): self.toggle_fullscreen,
-            (K.Key_Escape, False, False): self.exit_fullscreen,
+            (K.Key_Escape, False, False): self._escape,
+            (K.Key_I, False, False): self.toggle_info,
+            (K.Key_Delete, False, False): self.delete_current,
             (K.Key_H, False, False): self.toggle_overlay_lock,
             (K.Key_M, False, False): lambda: p.set_muted(not p.muted),
             (K.Key_L, False, False): lambda: p.set_loop(not p.loop),
@@ -289,6 +330,10 @@ class MainWindow(QMainWindow):
         if self.toast.isVisible():
             self.toast.move((w - self.toast.width()) // 2, 24)
         self.zoom_badge.move(w - self.zoom_badge.width() - 16, 16)
+        panel_width = min(InfoPanel.WIDTH, w - 2 * BAR_MARGIN)
+        self.info_panel.setGeometry(
+            w - panel_width - BAR_MARGIN, BAR_MARGIN, panel_width, bar_top - 2 * BAR_MARGIN
+        )
         if self.player.kind is MediaKind.AUDIO:
             self._layout_audio(w, h, bar_top)
         else:
@@ -309,6 +354,7 @@ class MainWindow(QMainWindow):
         if empty:
             self.audio_info.hide()
             self.zoom_badge.hide()
+            self.info_panel.hide()
             self._set_overlay(False, animate=False)
             self._cursor_hidden = False
             self._update_cursor()
@@ -531,12 +577,107 @@ class MainWindow(QMainWindow):
     # -- actions ------------------------------------------------------------------
 
     def open_file_dialog(self) -> None:
-        start_dir = str(self.player.path.parent) if self.player.path else ""
-        filename, _ = QFileDialog.getOpenFileName(
-            self, "Open file", start_dir, open_dialog_filter()
-        )
-        if filename:
-            self.open_file(Path(filename))
+        # Windows' own dialog, told not to add the file to Recent / Quick Access.
+        current = self.player.path or self._nav_anchor
+        path = get_open_path(int(self.winId()), current.parent if current else None)
+        if path is not None:
+            self.open_file(path)
+
+    def _escape(self) -> None:
+        if self.info_panel.isVisible():
+            self.toggle_info()
+        else:
+            self.exit_fullscreen()
+
+    # -- file operations ------------------------------------------------------------
+
+    def show_in_explorer(self) -> None:
+        if self.player.path is not None:
+            show_in_explorer(self.player.path)
+
+    def toggle_info(self) -> None:
+        if self.info_panel.isVisible():
+            self.info_panel.hide()
+        elif self.player.path is not None:
+            self.info_panel.show()
+            self.info_panel.raise_()
+            self.toast.raise_()
+            self._load_info()
+
+    def _load_info(self) -> None:
+        path, kind = self.player.path, self.player.kind
+        if path is None:
+            return
+        self.info_panel.show_loading()
+
+        def work() -> None:  # ffprobe can take a moment; keep the UI responsive
+            try:
+                info: FileInfo | None = read_info(path, kind)
+            except OSError:
+                info = None
+            self._info_bridge.post((path, info))
+
+        threading.Thread(target=work, name="file-info", daemon=True).start()
+
+    def _info_ready(self, results: list[tuple[Path, FileInfo | None]]) -> None:
+        for path, info in results:
+            if path != self.player.path or not self.info_panel.isVisible():
+                continue  # the user moved on
+            if info is None:
+                self.info_panel.set_info([("Error", "Couldn't read this file.")], [])
+            else:
+                self.info_panel.set_info(info.basic, info.raw)
+
+    def confirm_delete(self, path: Path) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Question)
+        box.setWindowTitle("Delete")
+        box.setText(f"Move {path.name} to the Recycle Bin?")
+        delete = box.addButton("Move to Recycle Bin", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(delete)
+        box.exec()
+        return box.clickedButton() is delete
+
+    def delete_current(self) -> None:
+        path = self.player.path
+        if path is None:
+            return
+        if not can_recycle(path):
+            self.toast.show_message(
+                f"{path.name} is on a drive without a Recycle Bin, so Glancer won't delete it."
+            )
+            return
+        if not self.confirm_delete(path):
+            return
+        if self.navigator.folder != path.parent:
+            self._enter_folder(path.parent)
+        target = self.navigator.neighbor(path, 1) or self.navigator.neighbor(path, -1)
+        self.player.unload()  # release mpv's handle on the file first
+        try:
+            move_to_recycle_bin(path)
+        except (RecycleError, OSError) as exc:
+            self.toast.show_message(str(exc) if isinstance(exc, RecycleError)
+                                    else f"{path.name} could not be deleted.")
+            self.open_file(path)
+            return
+        if target is not None:
+            self.open_file(target)
+        else:
+            self.clear()
+            self.toast.show_message(f"Moved {path.name} to the Recycle Bin")
+
+    def save_frame(self) -> None:
+        path, kind = self.player.path, self.player.kind
+        if path is None or kind is None or not kind.has_frames:
+            return
+        target = frame_filename(path, self.player.frame_number())
+        try:
+            self.player.save_frame(target)
+        except Exception:
+            self.toast.show_message("The frame could not be saved.")
+            return
+        self.toast.show_message(f"Saved {target.name}")
 
     def open_file(self, path: Path) -> None:
         if self.player.load(path):
@@ -680,6 +821,8 @@ class MainWindow(QMainWindow):
             self.player.set_video_margins(0, 0, 0, 0)
         self._layout_overlays()
         self._set_zoom(self._zoom)
+        if self.info_panel.isVisible():
+            self._load_info()
         self.user_activity()
 
     def _metadata_changed(self, tags: dict[str, str]) -> None:
@@ -707,6 +850,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         QApplication.instance().removeEventFilter(self)
+        self._info_bridge.close()
         self._idle_timer.stop()
         geometry = self._normal_geometry if self.isFullScreen() else self.saveGeometry()
         if geometry is not None:

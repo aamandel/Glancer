@@ -39,6 +39,7 @@ class Glyph:
     PREVIOUS = ""
     NEXT = ""
     MUSIC = ""
+    CLOSE = ""
 
 
 _icon_family: str | None = None
@@ -98,6 +99,18 @@ def stylesheet(accent: QColor) -> str:
     color: {TEXT}; background: rgba(20, 20, 20, 0.75); border-radius: 6px;
     padding: 4px 10px;
 }}
+#InfoPanel {{ background: rgba(20, 20, 20, 0.88); border-radius: 10px; }}
+#InfoPanel QLabel, #InfoPanel QToolButton {{ color: {TEXT}; background: transparent; }}
+#InfoPanel QLabel#InfoTitle {{ font-size: 12pt; }}
+#InfoPanel QToolButton {{ border: none; border-radius: 6px; padding: 4px 8px; }}
+#InfoPanel QToolButton:hover {{ background: rgba(255, 255, 255, 0.12); }}
+#InfoPanel QToolButton:checked {{ color: {a}; }}
+#InfoPanel QScrollArea, #InfoBody {{ background: transparent; }}
+#InfoPanel QScrollBar:vertical {{ background: transparent; width: 8px; }}
+#InfoPanel QScrollBar::handle:vertical {{
+    background: rgba(255, 255, 255, 0.25); border-radius: 4px; min-height: 24px;
+}}
+#InfoPanel QScrollBar::add-line, #InfoPanel QScrollBar::sub-line {{ height: 0px; }}
 #Toast {{
     color: {TEXT}; background: rgba(20, 20, 20, 0.88); border-radius: 8px;
     padding: 10px 16px;

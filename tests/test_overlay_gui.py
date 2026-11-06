@@ -15,7 +15,9 @@ from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from glancer import zoom
+from PIL import Image
+
+from glancer import file_ops, zoom
 from glancer.main_window import MainWindow
 from glancer.media_types import MediaKind
 from glancer.settings import SortKey
@@ -257,3 +259,57 @@ def test_folder_navigation(window: MainWindow, media, tmp_path: Path) -> None:  
     go(Qt.Key.Key_Right, True, "a3.mp4")
     window.bar.next_button.click()
     assert wait_until(lambda: window.player.path == tmp_path / "a2.jpg", 8)
+
+
+def test_delete_moves_to_next_then_previous(window: MainWindow, media, tmp_path: Path,  # type: ignore[no-untyped-def]
+                                            monkeypatch) -> None:
+    trash = tmp_path / "trash"
+    trash.mkdir()
+    folder = tmp_path / "photos"
+    folder.mkdir()
+    # Stand-in for the Recycle Bin so tests never fill the real one.
+    monkeypatch.setattr(file_ops, "send_to_trash", lambda p: shutil.move(str(p), trash / p.name))
+    for name in ("b1.png", "b2.png", "b3.png"):
+        shutil.copy(media("corners.png"), folder / name)
+    load(window, folder / "b2.png")
+    window._choose_sort(key=SortKey.NAME)
+
+    monkeypatch.setattr(window, "confirm_delete", lambda _p: False)
+    QTest.keyClick(window, Qt.Key.Key_Delete)
+    assert (folder / "b2.png").exists()  # cancelled
+
+    monkeypatch.setattr(window, "confirm_delete", lambda _p: True)
+    for key_or_menu, expected in [("key", "b3.png"), ("menu", "b1.png")]:
+        loaded: list[Path] = []
+        window.player.file_loaded.connect(lambda p, _k: loaded.append(p))
+        current = window.player.path
+        if key_or_menu == "key":
+            QTest.keyClick(window, Qt.Key.Key_Delete)
+        else:
+            window._delete_action.trigger()
+        assert wait_until(lambda: bool(loaded), 8) and loaded[0].name == expected
+        assert (trash / current.name).exists() and not current.exists()
+    window.delete_current()  # the last file: back to the start screen
+    assert window.empty_state.isVisible() and (trash / "b1.png").exists()
+
+
+def test_save_frame_and_info_panel(window: MainWindow, media, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    video = tmp_path / "clip.mp4"
+    shutil.copy(media("frames_30fps.mp4"), video)
+    load(window, video)
+    window.player.set_paused(True)
+    assert wait_until(lambda: window.player.paused)
+    window.player.seek(2.0)
+    assert wait_until(lambda: abs(window.player.position - 2.0) < 0.001)
+    window.save_frame()
+    window.save_frame()
+    first, second = tmp_path / "clip_frame_000060.png", tmp_path / "clip_frame_000060 (2).png"
+    assert wait_until(lambda: first.exists() and second.exists(), 5)
+    with Image.open(first) as frame:
+        assert frame.size == (1280, 720)  # original resolution, no overlay
+
+    QTest.keyClick(window, Qt.Key.Key_I)
+    assert window.info_panel.isVisible()
+    assert wait_until(lambda: "1280 × 720" in window.info_panel.basic.text(), 5)
+    QTest.keyClick(window, Qt.Key.Key_Escape)
+    assert not window.info_panel.isVisible()
