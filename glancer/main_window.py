@@ -63,6 +63,7 @@ from glancer.media_types import MediaKind
 from glancer.metadata import FileInfo, read_info
 from glancer.player.thread_bridge import ThreadBridge
 from glancer.win.file_dialog import get_open_path
+from glancer.win.fullscreen import SavedWindow, enter_fullscreen, leave_fullscreen
 from glancer.player.mpv_player import MpvPlayer
 from glancer.player.view import GlancerView
 from glancer.settings import Settings, SortKey, SortOrder
@@ -112,7 +113,7 @@ class MainWindow(QMainWindow):
         self._overlay_locked = False
         self._menus_open = 0
         self._normal_geometry: QByteArray | None = None
-        self._was_maximized = False
+        self._fullscreen: SavedWindow | None = None  # set while fullscreen
         self._tags: dict[str, str] = {}
         self._scrub_target: float | None = None
         self._zoom = ZoomState()  # kept across files for the session
@@ -190,7 +191,6 @@ class MainWindow(QMainWindow):
 
         self.clicks = ClickClassifier(self.view)
         self.clicks.clicked.connect(self._media_clicked)
-        self.clicks.double_clicked.connect(self.toggle_fullscreen)
         self.clicks.dragged.connect(self._dragged)
         self.clicks.drag_changed.connect(lambda _dragging: self._update_cursor())
         self.view.installEventFilter(self)
@@ -204,7 +204,7 @@ class MainWindow(QMainWindow):
         b = self.bar
         b.back_clicked.connect(lambda: self.arrow(-1))
         b.forward_clicked.connect(lambda: self.arrow(1))
-        b.play_clicked.connect(self.player.toggle_pause)
+        b.play_clicked.connect(self.toggle_play)
         b.rotate_clicked.connect(lambda: self.player.rotate(90))
         b.previous_item_clicked.connect(lambda: self.navigate(-1))
         b.next_item_clicked.connect(lambda: self.navigate(1))
@@ -285,7 +285,7 @@ class MainWindow(QMainWindow):
         K = Qt.Key
         p = self.player
         return {
-            (K.Key_Space, False, False): p.toggle_pause,
+            (K.Key_Space, False, False): self.toggle_play,
             (K.Key_Right, False, False): lambda: self.arrow(1),
             (K.Key_Left, False, False): lambda: self.arrow(-1),
             (K.Key_Right, True, False): lambda: self.navigate(1),
@@ -314,7 +314,7 @@ class MainWindow(QMainWindow):
         p.file_loaded.connect(self._file_loaded)
         p.load_failed.connect(self._load_failed)
         p.duration_changed.connect(b.set_duration)
-        p.position_changed.connect(b.set_position)
+        p.position_changed.connect(self._show_position)
         p.pause_changed.connect(b.set_paused)
         p.volume_changed.connect(b.set_volume)
         p.mute_changed.connect(b.set_muted)
@@ -416,6 +416,11 @@ class MainWindow(QMainWindow):
         if not self._overlay_locked:
             self._set_overlay(True)
         self._idle_timer.start(self.auto_hide_ms)
+        if self.isFullScreen() and self.player.paused:
+            # Under variable refresh the display may only refresh when this
+            # window presents; redrawing the (cheap, cached) paused frame keeps
+            # the cursor moving smoothly.
+            self.view.update()
 
     def _idle(self) -> None:
         kind = self.player.kind
@@ -533,8 +538,17 @@ class MainWindow(QMainWindow):
             self.toggle_overlay_lock()
             return
         if self.player.kind.has_timeline:
-            self.player.toggle_pause()
+            self.toggle_play()
         self.user_activity()
+
+    def _show_position(self, seconds: float) -> None:
+        if not self.editor.holds_display(seconds):
+            self.bar.set_position(self.editor.clamp(seconds))
+
+    def toggle_play(self) -> None:
+        if self.player.paused and self.editor.at_range_end():
+            self.player.seek(self.editor.bounds()[0])  # replay the kept range
+        self.player.toggle_pause()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         # Wheel over the bar or other overlays (the media view filters its own).
@@ -551,22 +565,24 @@ class MainWindow(QMainWindow):
 
     # -- fullscreen ---------------------------------------------------------------
 
+    def isFullScreen(self) -> bool:  # noqa: N802 - Qt's name
+        # Not Qt's fullscreen state: see glancer/win/fullscreen.py for why.
+        return self._fullscreen is not None
+
     def toggle_fullscreen(self) -> None:
         if self.isFullScreen():
             self.exit_fullscreen()
-        else:
-            self._normal_geometry = self.saveGeometry()
-            self._was_maximized = self.isMaximized()
-            self.showFullScreen()
+            return
+        self._normal_geometry = self.saveGeometry()
+        self._fullscreen = enter_fullscreen(int(self.winId()))
+        if self._fullscreen is not None:
             self.bar.set_fullscreen(True)
 
     def exit_fullscreen(self) -> None:
-        if not self.isFullScreen():
+        if self._fullscreen is None:
             return
-        if self._was_maximized:
-            self.showMaximized()
-        else:
-            self.showNormal()
+        saved, self._fullscreen = self._fullscreen, None
+        leave_fullscreen(int(self.winId()), saved)
         self.bar.set_fullscreen(False)
 
     # -- keys ---------------------------------------------------------------------
@@ -850,13 +866,14 @@ class MainWindow(QMainWindow):
 
     def _send_scrub_preview(self) -> None:
         if self._scrub_target is not None and self.bar.scrubbing:
-            self.player.seek(self._scrub_target, exact=False)
+            # Editing: exact previews, so a keyframe before the trim start never shows.
+            self.player.seek(self.editor.clamp(self._scrub_target), exact=self.editor.active)
         self._scrub_target = None
 
     def _scrub_finish(self, seconds: float) -> None:
         self._scrub_timer.stop()
         self._scrub_target = None
-        self.player.seek(seconds)
+        self.player.seek(self.editor.clamp(seconds))
 
     # -- player events --------------------------------------------------------------
 

@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from glancer.media_types import MediaKind
 from glancer.player.mpv_player import SPEEDS
-from glancer.ui.theme import BAR_BACKGROUND, Glyph, accent_color, icon_font
+from glancer.ui.theme import BAR_BACKGROUND, TEXT, Glyph, accent_color, icon_font
 from glancer.utils import format_time
 
 SEEK_STEPS = 100_000
@@ -71,12 +71,21 @@ class ElidedLabel(QLabel):
 
 
 class SeekSlider(QSlider):
-    """A slider that jumps straight to the clicked point and keeps dragging."""
+    """A slider that jumps straight to the clicked point and keeps dragging.
+
+    While editing it shows the trim range (markers) and the handle can't leave
+    it (limits). Its groove maps value -> x as:
+
+        x = handle_width / 2 + value / maximum * (width - handle_width)
+    """
+
+    resized = Signal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.markers: tuple[float | None, float | None] = (None, None)
+        self.limits: tuple[int, int] | None = None  # allowed values while editing
 
     def set_markers(self, start: float | None, end: float | None) -> None:
         """Trim start/end as fractions of the duration (None hides a marker)."""
@@ -84,34 +93,71 @@ class SeekSlider(QSlider):
             self.markers = (start, end)
             self.update()
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        super().paintEvent(event)
-        start, end = self.markers
-        if start is None and end is None:
-            return
+    def set_limits(self, limits: tuple[int, int] | None) -> None:
+        self.limits = limits
+
+    def _clamp(self, value: int) -> int:
+        if self.limits is None:
+            return value
+        return max(self.limits[0], min(self.limits[1], value))
+
+    def _handle_width(self) -> int:
         option = QStyleOptionSlider()
         self.initStyleOption(option)
-        handle = self.style().subControlRect(
+        return self.style().subControlRect(
             QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
-        )
-        span = max(1, self.width() - handle.width())
+        ).width()
+
+    def groove_span(self) -> tuple[float, float]:
+        """(x of value 0, pixels from value 0 to the maximum), in slider coordinates."""
+        handle = self._handle_width()
+        return handle / 2, float(max(1, self.width() - handle))
+
+    def _value_at(self, x: float) -> int:
+        left, span = self.groove_span()
+        fraction = max(0.0, min(1.0, (x - left) / span))
+        return self._clamp(round(self.minimum() + fraction * (self.maximum() - self.minimum())))
+
+    def resizeEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        super().resizeEvent(event)
+        self.resized.emit()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        start, end = self.markers
+        if start is None and end is None:
+            super().paintEvent(event)
+            return
+        # Editing: grey outside the kept range, accent up to the handle, a
+        # lighter accent from the handle to the end marker.
+        left, span = self.groove_span()
+        rng = max(1, self.maximum() - self.minimum())
 
         def x_of(fraction: float) -> float:
-            return handle.width() / 2 + max(0.0, min(1.0, fraction)) * span
+            return left + max(0.0, min(1.0, fraction)) * span
 
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         accent = accent_color()
         mid = self.height() / 2
-        left = x_of(start if start is not None else 0.0)
-        right = x_of(end if end is not None else 1.0)
-        fill = QColor(accent)
-        fill.setAlpha(90)
-        painter.fillRect(QRectF(left, mid - 3, max(1.0, right - left), 6), fill)
+        x1 = x_of(start if start is not None else 0.0)
+        x2 = x_of(end if end is not None else 1.0)
+        xh = x_of((self.value() - self.minimum()) / rng)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(255, 255, 255, 71))  # the groove colour in theme.py
+        painter.drawRoundedRect(QRectF(left, mid - 2, span, 4), 2, 2)
+        dim = QColor(accent)
+        dim.setAlpha(90)
+        painter.fillRect(QRectF(x1, mid - 2, max(0.0, x2 - x1), 4), dim)
+        painter.fillRect(QRectF(x1, mid - 2, max(0.0, min(xh, x2) - x1), 4), accent)
         painter.setPen(QPen(accent, 2))
-        for fraction in (start, end):
-            if fraction is not None:
-                x = x_of(fraction)
+        for x in (x1 if start is not None else None, x2 if end is not None else None):
+            if x is not None:
                 painter.drawLine(QPointF(x, mid - 8), QPointF(x, mid + 8))
+        # The handle (the stylesheet style would repaint the whole groove if asked
+        # for just the handle). Same look as theme.py: 12 px, accent, white on hover.
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(TEXT) if self.underMouse() else accent)
+        painter.drawEllipse(QPointF(xh, mid), 6, 6)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -121,13 +167,17 @@ class SeekSlider(QSlider):
                 QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
             )
             if not handle.contains(event.position().toPoint()):
-                span = max(1, self.width() - handle.width())
-                x = round(event.position().x() - handle.width() / 2)
-                self.setValue(
-                    QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), x, span)
-                )
+                self.setValue(self._value_at(event.position().x()))
         # The handle is now under the cursor, so the base class starts a drag.
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.limits is not None and self.isSliderDown():
+            # Position the handle ourselves so it can't be dragged out of the range.
+            self.setSliderPosition(self._value_at(event.position().x()))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
 
 
 def _icon_button(glyph: str, tip: str, parent: QWidget, size: float = 12) -> QToolButton:
@@ -177,6 +227,8 @@ class ControlBar(QWidget):
         self.duration_label = QLabel(format_time(0), self.scrub_row)
         for label in (self.time_label, self.duration_label):
             label.setObjectName("TimeLabel")
+        self.duration_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self._fit_time_labels()
         self.seek_slider = SeekSlider(self.scrub_row)
         self.seek_slider.setRange(0, SEEK_STEPS)
         scrub.addWidget(self.time_label)
@@ -312,7 +364,19 @@ class ControlBar(QWidget):
     def set_duration(self, seconds: float) -> None:
         self._duration = max(0.0, seconds)
         self.duration_label.setText(format_time(self._duration))
+        self._fit_time_labels()
         self._update_seek_enabled()
+
+    def _fit_time_labels(self) -> None:
+        """Fixed widths, sized for the widest digits, so the scrub bar (and the
+        editor's trim strip lined up with it) doesn't shift as the time changes."""
+        pattern = format_time(self._duration)
+        for label in (self.time_label, self.duration_label):
+            label.ensurePolished()
+            metrics = label.fontMetrics()
+            widest = max("0123456789", key=metrics.horizontalAdvance)
+            text = "".join(widest if c.isdigit() else c for c in pattern)
+            label.setFixedWidth(metrics.horizontalAdvance(text) + 2)
 
     def set_position(self, seconds: float) -> None:
         if self._scrubbing:

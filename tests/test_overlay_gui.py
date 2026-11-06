@@ -22,7 +22,7 @@ from glancer.main_window import MainWindow
 from glancer.media_types import MediaKind
 from glancer.settings import SortKey
 from glancer.zoom import ZoomState
-from tests.conftest import CLICK_INTERVAL_MS, process_events, wait_until
+from tests.conftest import process_events, wait_until
 
 
 
@@ -59,8 +59,8 @@ def double_click(window: MainWindow) -> None:
     mouse(window, QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton)
 
 
-def after_double_click_interval() -> None:
-    process_events(CLICK_INTERVAL_MS / 1000 + 0.1)
+def settle() -> None:
+    process_events(0.1)
 
 
 def test_layout_follows_media_kind(window: MainWindow, media) -> None:  # type: ignore[no-untyped-def]
@@ -101,13 +101,12 @@ def test_auto_hide_and_h_lock(window: MainWindow, media) -> None:  # type: ignor
     move_mouse(window)
     assert window.overlay_visible and window.bar.isVisible()
 
-    window.auto_hide_ms = 5000  # outlast the double-click wait below
     QTest.keyClick(window, Qt.Key.Key_H)
     assert window.overlay_locked and not window.overlay_visible
     move_mouse(window)
     assert not window.overlay_visible  # H-lock ignores mouse movement
     click(window)
-    after_double_click_interval()
+    settle()
     assert not window.overlay_locked and window.overlay_visible
     assert window.player.paused  # the unlocking click doesn't also play
 
@@ -118,27 +117,38 @@ def test_auto_hide_and_h_lock(window: MainWindow, media) -> None:  # type: ignor
     assert window.overlay_visible
 
 
-def test_click_double_click_and_fullscreen(window: MainWindow, media) -> None:  # type: ignore[no-untyped-def]
+def test_clicks_and_fullscreen(window: MainWindow, media) -> None:  # type: ignore[no-untyped-def]
+    import ctypes
+
     load(window, media("frames_30fps.mp4"))
     window.player.set_paused(True)
     assert wait_until(lambda: window.player.paused)
 
     click(window)
-    after_double_click_interval()
-    assert wait_until(lambda: not window.player.paused)  # single click plays
+    assert wait_until(lambda: not window.player.paused, 0.3)  # single click plays at once
     window.player.set_paused(True)
     assert wait_until(lambda: window.player.paused)
 
-    double_click(window)
-    assert wait_until(lambda: window.isFullScreen(), 3)
-    after_double_click_interval()
-    assert window.player.paused  # a double-click never also toggles playback
-    QTest.keyClick(window, Qt.Key.Key_Escape)
-    assert wait_until(lambda: not window.isFullScreen(), 3)
-    QTest.keyClick(window, Qt.Key.Key_F11)
-    assert wait_until(lambda: window.isFullScreen(), 3)
-    window.bar.fullscreen_button.click()
-    assert wait_until(lambda: not window.isFullScreen(), 3)
+    double_click(window)  # just two clicks: play, then pause again; no fullscreen
+    settle()
+    assert window.player.paused and not window.isFullScreen()
+
+    normal = window.geometry()
+    screen = window.screen().geometry()
+    hwnd = int(window.winId())
+    covers_screen = (screen.width(), screen.height() + 1)  # + 1 row: see glancer/win/fullscreen.py
+    for leave in (lambda: QTest.keyClick(window, Qt.Key.Key_Escape),
+                  window.bar.fullscreen_button.click,
+                  lambda: QTest.keyClick(window, Qt.Key.Key_F11)):
+        QTest.keyClick(window, Qt.Key.Key_F11)
+        assert window.isFullScreen()
+        # An off-screen 1 px border keeps Windows compositing the window, so
+        # popup menus appear over it.
+        assert ctypes.windll.user32.GetWindowLongW(hwnd, -16) & 0x00800000  # WS_BORDER
+        assert wait_until(lambda: window.view.size().toTuple() == covers_screen, 2), window.view.size()
+        leave()
+        assert not window.isFullScreen()
+        assert wait_until(lambda: window.geometry() == normal, 2), window.geometry()
 
 
 def test_playback_hotkeys(window: MainWindow, media) -> None:  # type: ignore[no-untyped-def]
@@ -211,7 +221,7 @@ def test_wheel_zoom_drag_pan_and_reset(window: MainWindow, media) -> None:  # ty
     mouse(window, QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton)
     limit_x, limit_y = zoom.max_pan(window._view_size(), (1920.0, 1080.0), state.zoom)
     assert (window.zoom_state.pan_x, window.zoom_state.pan_y) == pytest.approx((limit_x, limit_y))
-    after_double_click_interval()
+    settle()
     assert window.player.paused == paused and not window.overlay_locked
 
     # Rotating swaps the media size used for clamping.

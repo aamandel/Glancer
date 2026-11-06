@@ -9,7 +9,9 @@ from pathlib import Path
 
 import pytest
 from PIL import Image, JpegImagePlugin
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, Qt
+from PySide6.QtGui import QMouseEvent
+from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
 
 from glancer import file_ops
@@ -200,3 +202,100 @@ def test_edit_flow_copy_and_overwrite(window: MainWindow, media, tmp_path: Path,
         assert image.size == (min(width, height),) * 2
     assert abs(creation_time(photo) - 1_600_000_000) < 1 and os.path.getmtime(photo) > 1.7e9
     assert wait_until(lambda: window.player.path == photo)
+
+
+def _strip_drag(strip, x0: float, x1: float) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    # Deliver to whichever widget is really on top at the press point, as Qt does
+    # for a real click (a widget stacked above the strip would swallow it).
+    window = strip.window()
+    target = window.childAt(strip.mapTo(window, QPointF(x0, 20).toPoint()))
+
+    def send(kind, x: float, buttons) -> None:  # type: ignore[no-untyped-def]
+        pos = QPointF(target.mapFrom(strip, QPointF(x, 20).toPoint()))
+        QApplication.sendEvent(target, QMouseEvent(
+            kind, pos, target.mapToGlobal(pos), Qt.MouseButton.LeftButton, buttons,
+            Qt.KeyboardModifier.NoModifier))
+
+    send(QEvent.Type.MouseButtonPress, x0, Qt.MouseButton.LeftButton)
+    for i in range(1, 6):
+        send(QEvent.Type.MouseMove, x0 + (x1 - x0) * i / 5, Qt.MouseButton.LeftButton)
+    send(QEvent.Type.MouseButtonRelease, x1, Qt.MouseButton.NoButton)
+
+
+def test_trim_strip_keeps_playback_in_range(window: MainWindow, media, ffmpeg: str,  # type: ignore[no-untyped-def]
+                                           tmp_path: Path) -> None:
+    _load(window, media("frames_30fps.mp4"))
+    window.begin_edit()
+    editor, player, strip = window.editor, window.player, window.editor.strip
+    assert strip.isVisible() and strip.geometry().bottom() < window.bar.geometry().top()
+
+    # Grips keep their grab offset and land on frames; the video shows the grip's frame.
+    _strip_drag(strip, strip.x_of(0.0) - 3, strip.x_of(1.0) - 3)
+    _strip_drag(strip, strip.x_of(10.0) + 3, strip.x_of(2.0) + 3)
+    # At once, before mpv has seeked: the dot and the strip's playhead are on the grip.
+    assert strip.position == pytest.approx(2.0) and window.bar.time_label.text() == "00:02.000"
+    # Fixed-width times: the scrub bar (and the strip lined up with it) never shifts.
+    assert window.bar.time_label.width() == window.bar.duration_label.width()
+    assert (editor.start, editor.end) == (pytest.approx(1.0), pytest.approx(2.0))
+    assert wait_until(lambda: abs(player.position - 2.0) < 0.001), (player.position, player.frame_number(), player.paused)
+    _strip_drag(strip, strip.x_of(1.5), strip.x_of(4.5))  # slide by 3 s
+    assert (editor.start, editor.end) == (pytest.approx(4.0), pytest.approx(5.0))
+
+    # Loop off: pause on the last kept frame (frame 150), and Play starts over.
+    player.set_loop(False)
+    player.seek(4.8)
+    player.set_paused(False)
+    assert wait_until(lambda: player.paused and player.position > 4.9, 3)
+    process_events(0.1)
+    assert window.bar.time_label.text() == "00:05.000"
+    shown = tmp_path / "shown.png"
+    player.save_frame(shown)
+    with Image.open(shown) as image:
+        on_screen = image.convert("RGB").tobytes()
+    nearby = _frames(ffmpeg, media("frames_30fps.mp4"), (1280, 720),
+                     r"select=between(n\,148\,152)")
+    diffs = [_diff(on_screen, frame) for frame in nearby]
+    assert diffs.index(min(diffs)) == 2, diffs  # frame 150 (mpv's RGB conversion differs a bit)
+    window.toggle_play()
+    assert wait_until(lambda: not player.paused and 4.0 <= player.position < 4.5, 2)
+
+    # Loop on: wraps to the start without ever showing a frame past the end.
+    player.set_loop(True)
+    seen: list[float] = []
+    player.position_changed.connect(seen.append)
+    player.seek(4.8)
+    assert wait_until(lambda: any(t < 4.5 for t in seen[3:]), 3)
+    player.position_changed.disconnect(seen.append)
+    assert max(seen) < 5.0 + 0.5 / FPS and not player.paused
+    player.set_paused(True)
+
+    # The strip's track lines up with the scrub bar's groove.
+    slider = window.bar.seek_slider
+    left, span = slider.groove_span()
+    for seconds in (4.0, 5.0):
+        on_bar = slider.mapTo(window.media_area, QPoint(round(left + seconds / 10 * span), 0)).x()
+        on_strip = strip.mapTo(window.media_area, QPoint(round(strip.x_of(seconds)), 0)).x()
+        assert abs(on_bar - on_strip) <= 1
+
+    # Dragging the scrub bar's handle can't leave the kept range.
+    def send(kind, x: float, buttons) -> None:  # type: ignore[no-untyped-def]
+        pos = QPointF(x, slider.height() / 2)
+        QApplication.sendEvent(slider, QMouseEvent(
+            kind, pos, slider.mapToGlobal(pos), Qt.MouseButton.LeftButton, buttons,
+            Qt.KeyboardModifier.NoModifier))
+
+    send(QEvent.Type.MouseButtonPress, left + 0.45 * span, Qt.MouseButton.LeftButton)
+    for x in (0.7, 0.95, 0.1):
+        send(QEvent.Type.MouseMove, left + x * span, Qt.MouseButton.LeftButton)
+        seconds = window.bar._slider_seconds(slider.value())
+        assert 4.0 - 0.01 <= seconds <= 5.0 + 0.01, x
+        process_events(0.08)  # let stale player positions arrive: the strip ignores them
+        assert strip.position == pytest.approx(seconds), x
+    send(QEvent.Type.MouseButtonRelease, left + 0.1 * span, Qt.MouseButton.NoButton)
+    assert wait_until(lambda: abs(player.position - 4.0) < 0.02)
+    editor.cancel()
+    assert slider.limits is None

@@ -1,14 +1,12 @@
 """Click handling on the media plus the smaller overlay widgets.
 
-ClickClassifier turns raw mouse events on the media into clicks and
-double-clicks:
+ClickClassifier turns raw mouse events on the media into clicks and drags:
 
-    press   -> remember position
-    move    -> more than 4 px with the button down = a drag (Phase 3: pan)
-    release -> not a drag: wait the system double-click interval, then emit clicked
-    double  -> cancel the pending click, emit double_clicked
+    press   -> remember position (the second press of a double-click too)
+    move    -> more than 4 px with the button down = a drag (pan)
+    release -> not a drag: emit clicked at once
 
-so a double-click never also pauses and resumes playback.
+A double-click is simply two clicks (fullscreen is F11 or the button).
 """
 
 from __future__ import annotations
@@ -18,7 +16,6 @@ from PySide6.QtGui import QMouseEvent
 import html
 
 from PySide6.QtWidgets import (
-    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -37,7 +34,6 @@ TOAST_MS = 3500
 
 class ClickClassifier(QObject):
     clicked = Signal()
-    double_clicked = Signal()
     dragged = Signal(float, float)  # movement in pixels since the last drag event
     drag_changed = Signal(bool)  # a drag started (True) or ended (False)
 
@@ -46,12 +42,6 @@ class ClickClassifier(QObject):
         self._press: QPointF | None = None
         self._last: QPointF | None = None
         self._dragging = False
-        self._swallow_release = False
-        # None = the system double-click interval (tests use a shorter one).
-        self.interval_ms: int | None = None
-        self._pending = QTimer(self)
-        self._pending.setSingleShot(True)
-        self._pending.timeout.connect(self.clicked)
         target.installEventFilter(self)
 
     @property
@@ -84,13 +74,9 @@ class ClickClassifier(QObject):
             return False
         if event.button() != Qt.MouseButton.LeftButton:
             return False
-        if kind == QEvent.Type.MouseButtonPress:
+        if kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
             self._press = event.position()
             self._dragging = False
-        elif kind == QEvent.Type.MouseButtonDblClick:
-            self._pending.stop()
-            self._swallow_release = True
-            self.double_clicked.emit()
         elif kind == QEvent.Type.MouseButtonRelease:
             was_click = self._press is not None and not self._dragging
             was_dragging = self._dragging
@@ -99,11 +85,8 @@ class ClickClassifier(QObject):
             self._dragging = False
             if was_dragging:
                 self.drag_changed.emit(False)
-            if self._swallow_release:
-                self._swallow_release = False
-            elif was_click:
-                interval = self.interval_ms
-                self._pending.start(interval if interval is not None else QApplication.doubleClickInterval())
+            if was_click:
+                self.clicked.emit()
         return False
 
 

@@ -28,7 +28,7 @@ movement (audio controls stay visible).
 | Delete (to the Recycle Bin, after confirming) | ≡ menu | Del |
 | Edit (trim, crop) | ≡ menu → Edit… | E (Esc cancels) |
 | Seek | Click or drag the scrub bar | — |
-| Fullscreen | Double-click the media, ⛶ button | F11 (Esc exits) |
+| Fullscreen | ⛶ button | F11 (Esc exits) |
 | Hide controls until H or a click | — | H |
 | Volume / mute | Slider, speaker button, Ctrl+wheel | M (mute) |
 | Speed | 1× button | [ and ] (Backspace resets) |
@@ -44,9 +44,12 @@ original unless you choose Overwrite.
 
 | Media | Trim | Crop |
 | --- | --- | --- |
-| Video | I sets the start, O the end, at the current frame | Drag the box or its handles; presets Free, Original, 16:9, 9:16, 4:3, 1:1; exact X / Y / W / H |
-| Audio | I / O at the current position | — |
+| Video | Drag the start / end grips on the trim strip (the video shows that frame), drag inside the range to slide it; or I / O at the current frame | Drag the box or its handles; presets Free, Original, 16:9, 9:16, 4:3, 1:1; exact X / Y / W / H |
+| Audio | As for video | — |
 | Photo | — | As for video |
+
+While editing, playback stays inside the kept range: at its end Glancer pauses
+on the last kept frame, or jumps back to the start when Loop is on.
 
 Video modes:
 
@@ -98,7 +101,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 35 tests, ~26 s; needs a desktop session (opens windows)
+python -m pytest -q   # 36 tests, ~17 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application

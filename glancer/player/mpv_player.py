@@ -96,6 +96,9 @@ class MpvPlayer(QObject):
         self._loop_choice = False  # the user's loop setting for videos/audio
         self._loop = False
         self._rotation = 0
+        self._volume = max(0, min(100, int(volume)))
+        self._muted = bool(muted)
+        self._view_transform = (0.0, 0.0, 0.0)  # video-zoom, video-pan-x, video-pan-y
         self._watchdog = QTimer(self)
         self._watchdog.setSingleShot(True)
         self._watchdog.setInterval(STEP_WATCHDOG_MS)
@@ -152,9 +155,11 @@ class MpvPlayer(QObject):
             self.pause_changed.emit(self._paused)
         elif name == "volume":
             if value is not None:
-                self.volume_changed.emit(round(float(value)))
+                self._volume = round(float(value))
+                self.volume_changed.emit(self._volume)
         elif name == "mute":
-            self.mute_changed.emit(bool(value))
+            self._muted = bool(value)
+            self.mute_changed.emit(self._muted)
         elif name == "video-params":
             if isinstance(value, dict) and value.get("dw") and value.get("dh"):
                 width, height = int(value["dw"]), int(value["dh"])
@@ -253,6 +258,7 @@ class MpvPlayer(QObject):
         self.set_rotation(0)  # rotation is a per-file view setting
         # Videos, audio and animations start playing, like other media players.
         self._mpv.pause = kind is MediaKind.IMAGE
+        self.set_limits(end=None, loop=None)  # an editor's trim range never carries over
         self._mpv.loadfile(str(path), "replace")
         return True
 
@@ -264,12 +270,34 @@ class MpvPlayer(QObject):
 
     # -- playback -------------------------------------------------------------
 
+    def _set(self, name: str, value: object) -> None:
+        """Set an mpv property without waiting for mpv's core.
+
+        A synchronous set blocks this (the UI) thread until the core thread is
+        free. While paused, the core redraws after zoom/pan/etc. changes and
+        waits for this thread to render that frame, so the two wait on each
+        other until mpv's timeout: ~25 ms per set in fullscreen (dropping a
+        paused, zoomed drag to ~10 fps). Async commands run in order, so
+        later commands still see the new value.
+        """
+        text = ("yes" if value else "no") if isinstance(value, bool) else str(value)
+        self._mpv.command_async("set", name, text)
+
+    def set_limits(self, end: float | None, loop: tuple[float, float] | None) -> None:
+        """Stop at `end` (seconds) and/or loop between loop=(a, b); None clears."""
+        self._set("end", "none" if end is None else f"{end:.6f}")
+        self._set("ab-loop-a", "no" if loop is None else f"{loop[0]:.6f}")
+        self._set("ab-loop-b", "no" if loop is None else f"{loop[1]:.6f}")
+
     def toggle_pause(self) -> None:
         if self._kind is not None and self._kind.has_timeline:
-            self._mpv.pause = not self._paused
+            self.set_paused(not self._paused)
 
     def set_paused(self, paused: bool) -> None:
-        self._mpv.pause = paused
+        # Record the request now: the confirmation from mpv arrives a moment later,
+        # and a quick second toggle (e.g. a double-click) must see this one.
+        self._paused = paused
+        self._set("pause", paused)
 
     def seek(self, seconds: float, exact: bool = True) -> None:
         """Seek to a time. exact=False lands on a nearby keyframe (fast scrubbing)."""
@@ -290,7 +318,7 @@ class MpvPlayer(QObject):
         if self._kind is None or not self._kind.has_frames or frames == 0:
             return
         if not self._paused:
-            self._mpv.pause = True
+            self._set("pause", True)
         self._pending_steps = max(
             -MAX_PENDING_STEPS, min(MAX_PENDING_STEPS, self._pending_steps + frames)
         )
@@ -328,7 +356,7 @@ class MpvPlayer(QObject):
 
     def set_speed(self, speed: float) -> None:
         self._speed = max(SPEEDS[0], min(SPEEDS[-1], float(speed)))
-        self._mpv.speed = self._speed
+        self._set("speed", self._speed)
         self.speed_changed.emit(self._speed)
 
     def change_speed(self, direction: int) -> None:
@@ -349,12 +377,12 @@ class MpvPlayer(QObject):
 
     def _apply_loop(self, loop: bool) -> None:
         self._loop = loop
-        self._mpv.loop_file = "inf" if loop else "no"
+        self._set("loop-file", "inf" if loop else "no")
         self.loop_changed.emit(loop)
 
     def set_rotation(self, degrees: int) -> None:
         self._rotation = degrees % 360
-        self._mpv.video_rotate = self._rotation
+        self._set("video-rotate", self._rotation)
         self.rotation_changed.emit(self._rotation)
 
     def rotate(self, degrees: int) -> None:
@@ -369,34 +397,37 @@ class MpvPlayer(QObject):
 
     def set_view_transform(self, zoom_log2: float, pan_x: float, pan_y: float) -> None:
         """mpv's video-zoom (log2 scale) and video-pan (fractions of the shown size)."""
-        m = self._mpv
-        m.video_zoom = zoom_log2
-        m.video_pan_x = pan_x
-        m.video_pan_y = pan_y
+        values = (zoom_log2, pan_x, pan_y)
+        if values == self._view_transform:
+            return
+        for name, old, new in zip(("video-zoom", "video-pan-x", "video-pan-y"),
+                                  self._view_transform, values):
+            if old != new:
+                self._set(name, new)
+        self._view_transform = values
 
     def set_video_margins(self, left: float, top: float, right: float, bottom: float) -> None:
         """Reserve fractions of the view so the picture is drawn inside the rest."""
-        m = self._mpv
-        m.video_margin_ratio_left = left
-        m.video_margin_ratio_top = top
-        m.video_margin_ratio_right = right
-        m.video_margin_ratio_bottom = bottom
+        for side, value in zip(("left", "top", "right", "bottom"), (left, top, right, bottom)):
+            self._set(f"video-margin-ratio-{side}", value)
 
     # -- volume ---------------------------------------------------------------
 
     def set_volume(self, volume: int) -> None:
-        self._mpv.volume = max(0, min(100, int(volume)))
+        self._volume = max(0, min(100, int(volume)))
+        self._set("volume", self._volume)
 
     def set_muted(self, muted: bool) -> None:
-        self._mpv.mute = muted
+        self._muted = bool(muted)
+        self._set("mute", self._muted)
 
     @property
     def volume(self) -> int:
-        return round(float(self._mpv.volume or 0))
+        return self._volume
 
     @property
     def muted(self) -> bool:
-        return bool(self._mpv.mute)
+        return self._muted
 
     # -- shutdown -------------------------------------------------------------
 

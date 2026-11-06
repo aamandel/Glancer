@@ -12,7 +12,6 @@ if TYPE_CHECKING:
     from glancer.main_window import MainWindow
 
 MEDIA_DIR = Path(__file__).parent / "media"
-CLICK_INTERVAL_MS = 200  # instead of the system's ~500 ms; test clicks are instant
 
 
 @pytest.fixture(scope="session")
@@ -76,7 +75,6 @@ def window(shared_window: "MainWindow") -> "MainWindow":
     if win.overlay_locked:
         win.toggle_overlay_lock()
     win.auto_hide_ms = AUTO_HIDE_MS
-    win.clicks.interval_ms = CLICK_INTERVAL_MS
     win.reset_zoom()  # zoom deliberately survives file changes
     p = win.player
     p.set_speed(1.0)
