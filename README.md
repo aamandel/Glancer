@@ -6,6 +6,18 @@ no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
 > Glancer was formerly called **FrameStepper**.
 
+## Supported file types
+
+| Kind | Extensions |
+| --- | --- |
+| Video | .avi .m4v .mkv .mov .mp4 .webm .wmv |
+| Audio | .aac .flac .m4a .mp3 .ogg .opus .wav .wma |
+| Photo | .bmp .gif .jpeg .jpg .png .tif .tiff .webp |
+
+Animated GIF and WebP play like short videos. These are the types Glancer
+opens, lists in folder navigation (previous / next) and registers for in
+[Default app](#default-app). HEIC/HEIF photos and RAW camera files are not supported.
+
 ## Controls
 
 The controls float over the media and fade out after 2 seconds without mouse
@@ -128,7 +140,9 @@ a candidate ("Open with" and Settings > Apps > Default apps) and you choose it t
 - **Portable:** ≡ → Register file types… (for your account only). It then opens
   Default apps. ≡ → Unregister file types removes exactly what it added.
 
-Registration lists Glancer for every supported extension under its own ProgIDs
+Either way, Glancer is offered for every extension in
+[Supported file types](#supported-file-types); in Default apps you can pick
+it for all of them or only some. Registration uses its own ProgIDs
 (`Glancer.Video`, `Glancer.Audio`, `Glancer.Image`); the full list of keys is
 in `glancer\win\associations.py`. Opening a second file from Explorer opens
 a new window, as Photos does.

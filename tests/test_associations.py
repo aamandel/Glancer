@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from glancer.media_types import SUPPORTED_EXTENSIONS
+from glancer.media_types import (AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, SUPPORTED_EXTENSIONS,
+                                 VIDEO_EXTENSIONS)
 from glancer.win import associations
 
 
@@ -59,3 +60,11 @@ def test_register_round_trip_and_installer_lines() -> None:
 
     reg_text = associations.reg_file(exe)
     assert '@="\\"C:\\\\Apps\\\\Glancer\\\\Glancer.exe\\" \\"%1\\""' in reg_text
+
+    # The README's "Supported file types" table matches what Glancer registers.
+    readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+    rows = {line.split("|")[1].strip(): set(line.split("|")[2].split())
+            for line in readme.split("## Supported file types")[1].split("##")[0].splitlines()
+            if line.startswith("| ") and line.split("|")[1].strip() in ("Video", "Audio", "Photo")}
+    assert rows == {"Video": set(VIDEO_EXTENSIONS), "Audio": set(AUDIO_EXTENSIONS),
+                    "Photo": set(IMAGE_EXTENSIONS)}
