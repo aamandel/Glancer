@@ -11,7 +11,7 @@ with ffmpeg and Pillow so each one exercises a specific feature:
   tone.wav / .flac     lossless audio
   tone_cover.mp3       MP3 with embedded cover art and title/artist tags
   tone.m4a             AAC audio
-  exif_orient6.jpg     landscape pixels with EXIF orientation 6 (shows portrait)
+  exif_orient6.jpg     EXIF orientation 6: upright "TOP" only if rotation is honoured
   corners.png          coloured corner markers for zoom/pan edge checks
   animated.gif/.webp   short animations (treated as video)
   broken.mp4           text file with a video extension (error handling)
@@ -98,13 +98,17 @@ def make_videos(out: Path) -> None:
 def make_images(out: Path) -> Path:
     font = ImageFont.truetype("C:/Windows/Fonts/arialbd.ttf", 120)
 
-    # Landscape pixels; orientation 6 means "rotate 90 degrees clockwise to view".
-    landscape = Image.new("RGB", (1600, 1200), (40, 90, 160))
-    draw = ImageDraw.Draw(landscape)
-    draw.text((60, 60), "TOP", fill="white", font=font)
+    # Draw an upright portrait picture, then store it rotated 90 degrees
+    # counter-clockwise with orientation 6 ("rotate 90 clockwise to view").
+    # It only looks upright ("TOP" at the top) when a viewer honours EXIF.
+    portrait = Image.new("RGB", (1200, 1600), (40, 90, 160))
+    draw = ImageDraw.Draw(portrait)
+    draw.text((420, 60), "TOP", fill="white", font=font)
+    draw.rectangle((0, 1500, 1199, 1599), fill=(230, 50, 50))  # red bar at the bottom
     exif = Image.Exif()
     exif[0x0112] = 6
-    landscape.save(out / "exif_orient6.jpg", quality=92, exif=exif)
+    stored = portrait.transpose(Image.Transpose.ROTATE_90)  # 1600x1200 landscape pixels
+    stored.save(out / "exif_orient6.jpg", quality=92, exif=exif)
 
     corners = Image.new("RGB", (1920, 1080), (30, 30, 30))
     draw = ImageDraw.Draw(corners)

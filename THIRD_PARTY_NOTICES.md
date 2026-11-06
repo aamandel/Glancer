@@ -1,9 +1,9 @@
 # Third-party notices
 
-Glancer starts mpv as a separate playback process and communicates with it
-through mpv's documented JSON inter-process communication interface.
+Glancer plays media with libmpv, mpv's library form, loaded in-process through
+[python-mpv](https://github.com/jaseg/python-mpv).
 
-The bundled Windows mpv executable comes from the
+The bundled Windows `libmpv-2.dll` comes from the
 [mpv-winbuild-cmake](https://github.com/shinchiro/mpv-winbuild-cmake) project. mpv
 and the libraries compiled into that build retain their respective open-source
 licenses. mpv's license and source information are available from the

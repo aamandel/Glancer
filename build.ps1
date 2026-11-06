@@ -2,8 +2,8 @@ $ErrorActionPreference = "Stop"
 $projectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location -LiteralPath $projectDir
 
-if (-not (Test-Path -LiteralPath "bin\mpv.exe")) {
-    throw "bin\mpv.exe is missing. Add mpv.exe before building."
+if (-not (Test-Path -LiteralPath "bin\libmpv-2.dll")) {
+    throw "bin\libmpv-2.dll is missing. Add it before building (see README)."
 }
 
 python -m pip install -r requirements-dev.txt

@@ -4,17 +4,17 @@ Glancer is a private, fast Windows viewer for videos, photos, and audio, with
 frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
 no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
-> Glancer is under active development (formerly **FrameStepper**). The current
-> build is the original frame-stepping video player under the new name.
+> Glancer is under active development (formerly **FrameStepper**). It currently
+> plays videos, photos and audio with frame stepping; the new interface is next.
 
 ## Controls
 
 | Action | Button | Keyboard |
 | --- | --- | --- |
-| Open video | Open video | Ctrl+O |
+| Open file | Open file | Ctrl+O |
 | Play or pause | Play/Pause | Space |
-| Previous frame | One frame left | Left arrow or comma |
-| Next frame | One frame right | Right arrow or period |
+| Previous / next frame (video) | One frame | Left / Right arrow, comma / period |
+| Seek 5 s back / forward (audio) | — | Left / Right arrow |
 | Seek | Drag the scrub bar | — |
 
 ## Third-party binaries
@@ -23,7 +23,7 @@ Large binaries are not stored in git. Put these in `bin\` before running or buil
 
 | File | Source |
 | --- | --- |
-| `mpv.exe`, `libmpv-2.dll` | [mpv-winbuild-cmake releases](https://github.com/shinchiro/mpv-winbuild-cmake/releases) (`mpv-x86_64-*.7z` and `mpv-dev-x86_64-*.7z`) |
+| `libmpv-2.dll` | [mpv-winbuild-cmake releases](https://github.com/shinchiro/mpv-winbuild-cmake/releases) (`mpv-dev-x86_64-*.7z`) or the official [mpv releases](https://github.com/mpv-player/mpv/releases) (`libmpv-*-x86_64-w64-mingw32-gpl.zip`) |
 | `ffmpeg.exe`, `ffprobe.exe` | A Windows FFmpeg build with libx264, FFV1, FLAC and AAC, e.g. [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) |
 
 ## Run from source
@@ -48,7 +48,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q
+python -m pytest -q   # 14 tests, ~10 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application

@@ -1,49 +1,54 @@
+"""Main window (Phase 1: libmpv playback with the original simple layout).
+
+Phase 2 replaces this layout with the overlay UI.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QFileDialog,
     QApplication,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from glancer.mpv_controller import MpvController
-from glancer.utils import SUPPORTED_VIDEO_FILTER, find_mpv, format_time
-
+from glancer.media_types import MediaKind, open_dialog_filter
+from glancer.player.mpv_player import MpvPlayer
+from glancer.player.view import GlancerView
+from glancer.settings import Settings
+from glancer.utils import format_time
 
 SLIDER_STEPS = 100_000
+AUDIO_ARROW_SEEK_SECONDS = 5.0
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, initial_video: Path | None = None):
+    def __init__(self, initial_file: Path | None = None, settings: Settings | None = None):
         super().__init__()
-        self._controller: MpvController | None = None
-        self._initial_video = initial_video
-        self._duration = 0.0
-        self._position = 0.0
-        self._paused = True
+        self._settings = settings if settings is not None else Settings()
         self._seeking = False
 
+        self.player = MpvPlayer(self._settings.volume, self._settings.muted, self)
         self.setWindowTitle("Glancer")
         self.resize(960, 620)
         self.setMinimumSize(640, 420)
         self._build_ui()
         self._build_shortcuts()
+        self._connect_player()
 
-    def showEvent(self, event) -> None:  # type: ignore[no-untyped-def]
-        super().showEvent(event)
-        if self._controller is None:
-            self._start_player()
+        if initial_file is not None:
+            QTimer.singleShot(0, lambda: self.open_file(initial_file))
+
+    # -- UI -------------------------------------------------------------------
 
     def _build_ui(self) -> None:
         root = QWidget(self)
@@ -51,11 +56,8 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        self.video_surface = QWidget(root)
-        self.video_surface.setAttribute(Qt.WidgetAttribute.WA_NativeWindow)
-        self.video_surface.setStyleSheet("background: #101010;")
-        self.video_surface.setMinimumHeight(250)
-        layout.addWidget(self.video_surface, 1)
+        self.view = GlancerView(self.player, root)
+        layout.addWidget(self.view, 1)
 
         timeline = QHBoxLayout()
         self.current_time = QLabel("00:00.000", root)
@@ -69,7 +71,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(timeline)
 
         controls = QHBoxLayout()
-        self.open_button = QPushButton("Open video", root)
+        self.open_button = QPushButton("Open file", root)
         self.back_button = QPushButton("◀  One frame", root)
         self.play_button = QPushButton("Play", root)
         self.forward_button = QPushButton("One frame  ▶", root)
@@ -82,141 +84,129 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
 
         self.setCentralWidget(root)
-        self.statusBar().showMessage("Open a video to begin")
+        self.statusBar().showMessage("Open a file to begin")
 
-        self.open_button.clicked.connect(self.open_video_dialog)
-        self.back_button.clicked.connect(self.step_backward)
-        self.play_button.clicked.connect(self.toggle_pause)
-        self.forward_button.clicked.connect(self.step_forward)
+        self.open_button.clicked.connect(self.open_file_dialog)
+        self.back_button.clicked.connect(lambda: self.player.step(-1))
+        self.play_button.clicked.connect(self.player.toggle_pause)
+        self.forward_button.clicked.connect(lambda: self.player.step(1))
         self.scrubber.sliderPressed.connect(self._begin_seek)
         self.scrubber.sliderMoved.connect(self._preview_seek)
         self.scrubber.sliderReleased.connect(self._finish_seek)
-        self._set_playback_controls_enabled(False)
+        self._update_controls(None)
 
     def _build_shortcuts(self) -> None:
         open_action = QAction("Open", self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
-        open_action.triggered.connect(self.open_video_dialog)
+        open_action.triggered.connect(self.open_file_dialog)
         self.addAction(open_action)
 
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self, activated=self.toggle_pause)
-        QShortcut(QKeySequence(Qt.Key.Key_Right), self, activated=self.step_forward)
-        QShortcut(QKeySequence(Qt.Key.Key_Left), self, activated=self.step_backward)
-        QShortcut(QKeySequence("."), self, activated=self.step_forward)
-        QShortcut(QKeySequence(","), self, activated=self.step_backward)
+        def shortcut(key: QKeySequence | str, handler) -> None:  # type: ignore[no-untyped-def]
+            QShortcut(QKeySequence(key), self, activated=handler, autoRepeat=True)
 
-    def _start_player(self) -> None:
-        mpv_path = find_mpv()
-        if mpv_path is None:
-            QMessageBox.critical(
-                self,
-                "mpv is missing",
-                "Glancer could not find mpv.exe.\n\n"
-                "Place mpv.exe in the Glancer folder or its bin folder, "
-                "then reopen the application.",
-            )
-            return
+        shortcut(QKeySequence(Qt.Key.Key_Space), self.player.toggle_pause)
+        shortcut(QKeySequence(Qt.Key.Key_Right), lambda: self.arrow(1))
+        shortcut(QKeySequence(Qt.Key.Key_Left), lambda: self.arrow(-1))
+        shortcut(".", lambda: self.player.step(1))
+        shortcut(",", lambda: self.player.step(-1))
 
-        self._controller = MpvController(mpv_path, int(self.video_surface.winId()), self)
-        self._controller.connected.connect(self._player_connected)
-        self._controller.property_changed.connect(self._property_changed)
-        self._controller.playback_error.connect(self._show_playback_error)
-        self._controller.stopped.connect(self._player_stopped)
-        self._controller.start()
+    def _connect_player(self) -> None:
+        p = self.player
+        p.file_loaded.connect(self._file_loaded)
+        p.load_failed.connect(self._load_failed)
+        p.duration_changed.connect(self._duration_changed)
+        p.position_changed.connect(self._position_changed)
+        p.pause_changed.connect(
+            lambda paused: self.play_button.setText("Play" if paused else "Pause")
+        )
+        p.volume_changed.connect(self._remember_volume)
+        p.mute_changed.connect(self._remember_mute)
 
-    def _player_connected(self) -> None:
-        if self._initial_video is not None:
-            video, self._initial_video = self._initial_video, None
-            self.open_video(video)
+    def _update_controls(self, kind: MediaKind | None) -> None:
+        has_frames = kind is not None and kind.has_frames
+        has_timeline = kind is not None and kind.has_timeline
+        self.back_button.setEnabled(has_frames)
+        self.forward_button.setEnabled(has_frames)
+        self.play_button.setEnabled(has_timeline)
+        self.scrubber.setEnabled(has_timeline and self.player.duration > 0)
 
-    def open_video_dialog(self) -> None:
+    # -- actions --------------------------------------------------------------
+
+    def open_file_dialog(self) -> None:
+        start_dir = str(self.player.path.parent) if self.player.path else ""
         filename, _ = QFileDialog.getOpenFileName(
-            self, "Open video", "", SUPPORTED_VIDEO_FILTER
+            self, "Open file", start_dir, open_dialog_filter()
         )
         if filename:
-            self.open_video(Path(filename))
+            self.open_file(Path(filename))
 
-    def open_video(self, path: Path) -> None:
-        if self._controller is None or not self._controller.is_running:
-            self._show_playback_error("The playback engine is not running.")
-            return
-        self._duration = 0
-        self._position = 0
+    def open_file(self, path: Path) -> None:
         self.scrubber.setValue(0)
         self.current_time.setText(format_time(0))
         self.total_time.setText(format_time(0))
-        self.statusBar().showMessage(f"Loading {path.name}…")
-        self._controller.load(path)
+        if self.player.load(path):
+            self.statusBar().showMessage(f"Loading {path.name}…")
 
-    def _property_changed(self, name: str, value: object) -> None:
-        if name == "duration":
-            self._duration = float(value or 0)
-            self.total_time.setText(format_time(self._duration))
-            self.scrubber.setEnabled(self._duration > 0)
-        elif name == "time-pos":
-            self._position = float(value or 0)
-            if not self._seeking:
-                self.current_time.setText(format_time(self._position))
-                slider_value = (
-                    round(self._position / self._duration * SLIDER_STEPS)
-                    if self._duration > 0
-                    else 0
-                )
-                self.scrubber.setValue(max(0, min(SLIDER_STEPS, slider_value)))
-        elif name == "pause":
-            self._paused = bool(value)
-            self.play_button.setText("Play" if self._paused else "Pause")
-        elif name == "path":
-            loaded = bool(value)
-            self._set_playback_controls_enabled(loaded)
-            if loaded:
-                path = Path(str(value))
-                self.setWindowTitle(f"{path.name} — Glancer")
-                self.statusBar().showMessage(str(path))
+    def arrow(self, direction: int) -> None:
+        """Left/Right: frames on video, ±5 s on audio. (Photos: Phase 4.)"""
+        kind = self.player.kind
+        if kind is None:
+            return
+        if kind.has_frames:
+            self.player.step(direction)
+        elif kind is MediaKind.AUDIO:
+            self.player.seek_relative(direction * AUDIO_ARROW_SEEK_SECONDS)
 
-    def _set_playback_controls_enabled(self, enabled: bool) -> None:
-        self.back_button.setEnabled(enabled)
-        self.play_button.setEnabled(enabled)
-        self.forward_button.setEnabled(enabled)
+    # -- player events --------------------------------------------------------
 
-    def toggle_pause(self) -> None:
-        if self._controller is not None and self.play_button.isEnabled():
-            self._controller.toggle_pause()
+    def _file_loaded(self, path: Path, kind: MediaKind) -> None:
+        self.setWindowTitle(f"{path.name} — Glancer")
+        self.statusBar().showMessage(path.name)
+        self._update_controls(kind)
 
-    def step_forward(self) -> None:
-        if self._controller is not None and self.forward_button.isEnabled():
-            self._controller.set_paused(True)
-            self._controller.step_forward()
+    def _load_failed(self, message: str) -> None:
+        self.statusBar().showMessage(message)
+        if self.player.path is None:
+            self.setWindowTitle("Glancer")
+            self._update_controls(None)
 
-    def step_backward(self) -> None:
-        if self._controller is not None and self.back_button.isEnabled():
-            self._controller.set_paused(True)
-            self._controller.step_backward()
+    def _duration_changed(self, duration: float) -> None:
+        self.total_time.setText(format_time(duration))
+        self._update_controls(self.player.kind)
+
+    def _position_changed(self, position: float) -> None:
+        if self._seeking:
+            return
+        self.current_time.setText(format_time(position))
+        duration = self.player.duration
+        value = round(position / duration * SLIDER_STEPS) if duration > 0 else 0
+        self.scrubber.setValue(max(0, min(SLIDER_STEPS, value)))
+
+    def _remember_volume(self, volume: int) -> None:
+        self._settings.volume = volume
+
+    def _remember_mute(self, muted: bool) -> None:
+        self._settings.muted = muted
+
+    # -- scrubbing ------------------------------------------------------------
 
     def _begin_seek(self) -> None:
         self._seeking = True
 
     def _preview_seek(self, value: int) -> None:
-        if self._duration > 0:
-            self.current_time.setText(format_time(value / SLIDER_STEPS * self._duration))
+        if self.player.duration > 0:
+            self.current_time.setText(format_time(value / SLIDER_STEPS * self.player.duration))
 
     def _finish_seek(self) -> None:
         self._seeking = False
-        if self._controller is not None and self._duration > 0:
-            seconds = self.scrubber.value() / SLIDER_STEPS * self._duration
-            self._controller.seek(seconds)
+        if self.player.duration > 0:
+            self.player.seek(self.scrubber.value() / SLIDER_STEPS * self.player.duration)
 
-    def _show_playback_error(self, message: str) -> None:
-        QMessageBox.critical(self, "Playback error", message)
-
-    def _player_stopped(self) -> None:
-        self._set_playback_controls_enabled(False)
-        self.scrubber.setEnabled(False)
-        if self.isVisible():
-            self.statusBar().showMessage("Playback engine stopped")
+    # -- shutdown -------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._controller is not None:
-            self._controller.close()
+        self.view.release()
+        self.player.close()
+        self._settings.sync()
         event.accept()
         QApplication.quit()

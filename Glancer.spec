@@ -2,13 +2,13 @@
 from pathlib import Path
 
 project_dir = Path(SPECPATH)
-mpv_path = project_dir / "bin" / "mpv.exe"
-d3dcompiler_path = project_dir / "bin" / "d3dcompiler_43.dll"
+# Large third-party binaries live in bin/ (not in git). Phase 7 finalizes
+# packaging (ffmpeg/ffprobe for editing, installer, icon).
 binaries = []
-if mpv_path.is_file():
-    binaries.append((str(mpv_path), "."))
-if d3dcompiler_path.is_file():
-    binaries.append((str(d3dcompiler_path), "."))
+for name in ("libmpv-2.dll",):
+    path = project_dir / "bin" / name
+    if path.is_file():
+        binaries.append((str(path), "."))
 
 a = Analysis(
     ["run_glancer.py"],
