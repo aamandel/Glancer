@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+build/
+dist/
+bin/mpv.7z
+smoke-test.mp4
+
+# Private test media (never commit)
+TestMedia/
+
+# Local planning documents (not published)
+IMPLEMENTATION_PLAN.md
+PROJECT_SUMMARY.md
+
+# Third-party binaries (too large / redistributed separately)
+bin/
+*.exe
+*.dll
+
+# Local tooling
+.claude/
+.venv/
