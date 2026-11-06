@@ -94,6 +94,10 @@ def stylesheet(accent: QColor) -> str:
 }}
 #EmptyState QPushButton:hover {{ background: {accent.lighter(112).name()}; }}
 #EmptyState QLabel {{ color: {DIM_TEXT}; background: transparent; }}
+#ZoomBadge {{
+    color: {TEXT}; background: rgba(20, 20, 20, 0.75); border-radius: 6px;
+    padding: 4px 10px;
+}}
 #Toast {{
     color: {TEXT}; background: rgba(20, 20, 20, 0.88); border-radius: 8px;
     padding: 10px 16px;

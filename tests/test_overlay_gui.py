@@ -5,6 +5,7 @@ Mouse input is sent as synthetic Qt events, so the real cursor never moves.
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
@@ -13,8 +14,10 @@ from PySide6.QtGui import QMouseEvent, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
+from glancer import zoom
 from glancer.main_window import MainWindow
 from glancer.media_types import MediaKind
+from glancer.zoom import ZoomState
 from tests.conftest import CLICK_INTERVAL_MS, process_events, wait_until
 
 
@@ -90,7 +93,7 @@ def test_auto_hide_and_h_lock(window: MainWindow, media) -> None:  # type: ignor
     assert window.overlay_visible
     assert wait_until(lambda: not window.overlay_visible, 2)
     assert wait_until(lambda: not window.bar.isVisible(), 1)
-    assert window.media_area.cursor().shape() == Qt.CursorShape.BlankCursor
+    assert window.view.cursor().shape() == Qt.CursorShape.BlankCursor
     move_mouse(window)
     assert window.overlay_visible and window.bar.isVisible()
 
@@ -167,3 +170,55 @@ def test_playback_hotkeys(window: MainWindow, media) -> None:  # type: ignore[no
     # Loop and speed carry over to the next video; rotation is per file.
     load(window, media("frames_vfr.mp4"))
     assert p.loop and p.rotation == 0
+
+
+def wheel(window: MainWindow, notches: float, ctrl: bool = False) -> None:
+    pos = QPointF(window.view.width() * 0.7, window.view.height() * 0.4)
+    mods = Qt.KeyboardModifier.ControlModifier if ctrl else Qt.KeyboardModifier.NoModifier
+    event = QWheelEvent(
+        pos, window.view.mapToGlobal(pos), QPoint(0, 0), QPoint(0, round(notches * 120)),
+        Qt.MouseButton.NoButton, mods, Qt.ScrollPhase.NoScrollPhase, False,
+    )
+    QApplication.sendEvent(window.view, event)
+
+
+def test_wheel_zoom_drag_pan_and_reset(window: MainWindow, media) -> None:  # type: ignore[no-untyped-def]
+    load(window, media("corners.png"))
+    assert wait_until(lambda: window._media_size == (1920.0, 1080.0))
+    wheel(window, 4)
+    state = window.zoom_state
+    assert state.percent == 244 and window.bar.zoom_label.text() == "244%"
+    assert window.zoom_badge.isVisible() and window.zoom_badge.text() == "244%"
+    assert window.player.get_property("video-zoom") == pytest.approx(math.log2(state.zoom))
+    assert window.view.cursor().shape() == Qt.CursorShape.OpenHandCursor
+    volume = window.player.volume
+    wheel(window, 1, ctrl=True)  # Ctrl+wheel is volume, not zoom
+    assert window.zoom_state.percent == 244
+    assert wait_until(lambda: window.player.volume == min(100, volume + 5))
+
+    # Drag right/down far: clamped so the top-left corner shows, and no click fires.
+    paused = window.player.paused
+    mouse(window, QEvent.Type.MouseButtonPress, Qt.MouseButton.LeftButton)
+    for step in range(1, 6):
+        pos = QPointF(window.view.width() / 2 + step * 400, window.view.height() / 3 + step * 400)
+        QApplication.sendEvent(window.view, QMouseEvent(
+            QEvent.Type.MouseMove, pos, window.view.mapToGlobal(pos), Qt.MouseButton.NoButton,
+            Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier))
+    mouse(window, QEvent.Type.MouseButtonRelease, Qt.MouseButton.LeftButton)
+    limit_x, limit_y = zoom.max_pan(window._view_size(), (1920.0, 1080.0), state.zoom)
+    assert (window.zoom_state.pan_x, window.zoom_state.pan_y) == pytest.approx((limit_x, limit_y))
+    after_double_click_interval()
+    assert window.player.paused == paused and not window.overlay_locked
+
+    # Rotating swaps the media size used for clamping.
+    QTest.keyClick(window, Qt.Key.Key_R)
+    assert wait_until(lambda: window._media_size == (1080.0, 1920.0))
+
+    # Zoom carries over to the next file; audio is shown unzoomed; 0 resets.
+    load(window, media("frames_30fps.mp4"))
+    assert window.zoom_state.percent == 244
+    assert window.player.get_property("video-zoom") == pytest.approx(math.log2(state.zoom))
+    load(window, media("tone.wav"))
+    assert window.player.get_property("video-zoom") == 0 and not window.zoom_badge.isVisible()
+    QTest.keyClick(window, Qt.Key.Key_0)
+    assert window.zoom_state == ZoomState()

@@ -77,6 +77,7 @@ def window(shared_window: "MainWindow") -> "MainWindow":
         win.toggle_overlay_lock()
     win.auto_hide_ms = AUTO_HIDE_MS
     win.clicks.interval_ms = CLICK_INTERVAL_MS
+    win.reset_zoom()  # zoom deliberately survives file changes
     p = win.player
     p.set_speed(1.0)
     p.set_loop(False)

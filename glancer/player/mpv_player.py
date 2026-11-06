@@ -360,6 +360,13 @@ class MpvPlayer(QObject):
     def rotate(self, degrees: int) -> None:
         self.set_rotation(self._rotation + degrees)
 
+    def set_view_transform(self, zoom_log2: float, pan_x: float, pan_y: float) -> None:
+        """mpv's video-zoom (log2 scale) and video-pan (fractions of the shown size)."""
+        m = self._mpv
+        m.video_zoom = zoom_log2
+        m.video_pan_x = pan_x
+        m.video_pan_y = pan_y
+
     def set_video_margins(self, left: float, top: float, right: float, bottom: float) -> None:
         """Reserve fractions of the view so the picture is drawn inside the rest."""
         m = self._mpv

@@ -12,6 +12,9 @@ Overlay visibility:
     H                   -> "locked": bar hidden and mouse movement ignored
     click on media / H  -> unlock and show the bar
 
+Zoom (zoom.py) is relative to fit, 100-1600%, and kept across files for the
+session; 0 resets it. The wheel zooms around the cursor; left-drag pans.
+
 Keys are handled in keyPressEvent rather than QShortcut so held keys repeat
 and nothing depends on which child has focus (overlay controls take no focus).
 """
@@ -46,7 +49,9 @@ from glancer.player.mpv_player import MpvPlayer
 from glancer.player.view import GlancerView
 from glancer.settings import Settings
 from glancer.ui.control_bar import ControlBar
-from glancer.ui.overlays import AudioInfo, ClickClassifier, EmptyState, Toast
+from glancer.ui.overlays import AudioInfo, ClickClassifier, EmptyState, Toast, ZoomBadge
+from glancer import zoom
+from glancer.zoom import ZoomState
 
 AUDIO_ARROW_SEEK_SECONDS = 5.0
 AUTO_HIDE_MS = 2000
@@ -55,6 +60,7 @@ BAR_MARGIN = 8
 VOLUME_WHEEL_STEP = 5
 SCRUB_PREVIEW_MS = 60
 KeyHandler = Callable[[], None]
+ZOOMABLE = (MediaKind.VIDEO, MediaKind.ANIMATED, MediaKind.IMAGE)
 
 
 class MediaArea(QWidget):
@@ -76,6 +82,9 @@ class MainWindow(QMainWindow):
         self._was_maximized = False
         self._tags: dict[str, str] = {}
         self._scrub_target: float | None = None
+        self._zoom = ZoomState()  # kept across files for the session
+        self._media_size: tuple[float, float] | None = None
+        self._cursor_hidden = False
         self.auto_hide_ms = AUTO_HIDE_MS
 
         self.player = MpvPlayer(self._settings.volume, self._settings.muted, self)
@@ -110,6 +119,7 @@ class MainWindow(QMainWindow):
         self.bar = ControlBar(self.media_area)
         for child in [self.bar, *self.bar.findChildren(QWidget)]:
             child.setMouseTracking(True)
+        self.zoom_badge = ZoomBadge(self.media_area)
         self.toast = Toast(self.media_area)
 
         self._bar_opacity = QGraphicsOpacityEffect(self.bar)
@@ -132,6 +142,9 @@ class MainWindow(QMainWindow):
         self.clicks = ClickClassifier(self.view)
         self.clicks.clicked.connect(self._media_clicked)
         self.clicks.double_clicked.connect(self.toggle_fullscreen)
+        self.clicks.dragged.connect(self._dragged)
+        self.clicks.drag_changed.connect(lambda _dragging: self._update_cursor())
+        self.view.installEventFilter(self)
 
         self.menu = self._build_menu()
         self.bar.menu_button.setMenu(self.menu)
@@ -189,6 +202,7 @@ class MainWindow(QMainWindow):
             (K.Key_BracketRight, False, False): lambda: p.change_speed(1),
             (K.Key_BracketLeft, False, False): lambda: p.change_speed(-1),
             (K.Key_Backspace, False, False): lambda: p.set_speed(1.0),
+            (K.Key_0, False, False): self.reset_zoom,
         }
 
     def _connect_player(self) -> None:
@@ -203,6 +217,7 @@ class MainWindow(QMainWindow):
         p.speed_changed.connect(b.set_speed)
         p.loop_changed.connect(b.set_loop)
         p.metadata_changed.connect(self._metadata_changed)
+        p.video_size_changed.connect(self._media_size_changed)
         p.volume_changed.connect(self._remember_volume)
         p.mute_changed.connect(self._remember_mute)
         b.set_volume(p.volume)
@@ -222,8 +237,11 @@ class MainWindow(QMainWindow):
         )
         if self.toast.isVisible():
             self.toast.move((w - self.toast.width()) // 2, 24)
+        self.zoom_badge.move(w - self.zoom_badge.width() - 16, 16)
         if self.player.kind is MediaKind.AUDIO:
             self._layout_audio(w, h, bar_top)
+        else:
+            self._set_zoom(self._zoom)  # re-clamp pan for the new view size
 
     def _layout_audio(self, w: int, h: int, bar_top: int) -> None:
         """Cover art in a centred box above the caption; the bar stays clear of it."""
@@ -239,8 +257,10 @@ class MainWindow(QMainWindow):
         self.empty_state.setVisible(empty)
         if empty:
             self.audio_info.hide()
+            self.zoom_badge.hide()
             self._set_overlay(False, animate=False)
-            self.media_area.unsetCursor()
+            self._cursor_hidden = False
+            self._update_cursor()
 
     # -- overlay visibility -------------------------------------------------------
 
@@ -278,7 +298,9 @@ class MainWindow(QMainWindow):
 
     def user_activity(self) -> None:
         """Mouse moved: show the controls and cursor, restart the idle timer."""
-        self.media_area.unsetCursor()
+        if self._cursor_hidden:
+            self._cursor_hidden = False
+            self._update_cursor()
         if not self._overlay_locked:
             self._set_overlay(True)
         self._idle_timer.start(self.auto_hide_ms)
@@ -291,7 +313,8 @@ class MainWindow(QMainWindow):
             self._idle_timer.start(self.auto_hide_ms)
             return
         self._set_overlay(False)
-        self.media_area.setCursor(Qt.CursorShape.BlankCursor)
+        self._cursor_hidden = True
+        self._update_cursor()
 
     def toggle_overlay_lock(self) -> None:
         if self._overlay_locked:
@@ -300,6 +323,7 @@ class MainWindow(QMainWindow):
         else:
             self._overlay_locked = True
             self._set_overlay(False)
+        self._set_zoom(self._zoom)  # the badge hides while locked
 
     def _menu_shown(self) -> None:
         self._menus_open += 1
@@ -312,7 +336,80 @@ class MainWindow(QMainWindow):
         if event.type() == QEvent.Type.MouseMove and isinstance(obj, QWidget):
             if obj.window() is self:
                 self.user_activity()
+        elif obj is self.view and event.type() == QEvent.Type.Wheel:
+            assert isinstance(event, QWheelEvent)
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                self._wheel_volume(event)
+            else:
+                self._wheel_zoom(event)
+            return True
         return False
+
+    # -- zoom and pan -------------------------------------------------------------
+
+    @property
+    def zoom_state(self) -> ZoomState:
+        return self._zoom
+
+    def _zoomable(self) -> bool:
+        return self.player.kind in ZOOMABLE
+
+    def _view_size(self) -> tuple[float, float]:
+        return float(self.view.width()), float(self.view.height())
+
+    def _wheel_zoom(self, event: QWheelEvent) -> None:
+        notches = event.angleDelta().y() / 120
+        if not notches or not self._zoomable() or self._media_size is None:
+            return
+        anchor = event.position()
+        self._set_zoom(
+            zoom.zoom_at(
+                self._zoom, self._view_size(), self._media_size,
+                zoom.wheel_factor(notches), (anchor.x(), anchor.y()),
+            ),
+            announce=True,
+        )
+
+    def _dragged(self, dx: float, dy: float) -> None:
+        if self._zoom.is_zoomed and self._zoomable() and self._media_size is not None:
+            self._set_zoom(zoom.pan_by(self._zoom, self._view_size(), self._media_size, dx, dy))
+
+    def reset_zoom(self) -> None:
+        self._set_zoom(ZoomState(), announce=True)
+
+    def _media_size_changed(self, width: int, height: int) -> None:
+        self._media_size = (float(width), float(height))
+        self._set_zoom(self._zoom)
+
+    def _set_zoom(self, state: ZoomState, announce: bool = False) -> None:
+        """Clamp, store and apply a zoom state; audio always shows unzoomed."""
+        if self._media_size is not None:
+            state = zoom.clamp(state, self._view_size(), self._media_size)
+        changed = state.percent != self._zoom.percent
+        self._zoom = state
+        if self._zoomable():
+            self.player.set_view_transform(*zoom.mpv_values(state))
+        else:
+            self.player.set_view_transform(0.0, 0.0, 0.0)
+        self.bar.set_zoom(state.percent)
+        self.zoom_badge.set_percent(state.percent)
+        self.zoom_badge.setVisible(
+            state.is_zoomed and self._zoomable() and not self._overlay_locked
+        )
+        if announce and changed and self._overlay_locked:
+            self.toast.show_message(f"{state.percent}%")
+        self._update_cursor()
+
+    def _update_cursor(self) -> None:
+        if self._cursor_hidden:
+            self.view.setCursor(Qt.CursorShape.BlankCursor)
+        elif self._zoom.is_zoomed and self._zoomable():
+            self.view.setCursor(
+                Qt.CursorShape.ClosedHandCursor if self.clicks.dragging
+                else Qt.CursorShape.OpenHandCursor
+            )
+        else:
+            self.view.unsetCursor()
 
     # -- mouse on the media -------------------------------------------------------
 
@@ -327,14 +424,17 @@ class MainWindow(QMainWindow):
         self.user_activity()
 
     def wheelEvent(self, event: QWheelEvent) -> None:
+        # Wheel over the bar or other overlays (the media view filters its own).
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            notches = event.angleDelta().y() / 120
-            if notches:
-                volume = self.player.volume + round(notches * VOLUME_WHEEL_STEP)
-                self.player.set_volume(volume)
+            self._wheel_volume(event)
             event.accept()
             return
         super().wheelEvent(event)
+
+    def _wheel_volume(self, event: QWheelEvent) -> None:
+        notches = event.angleDelta().y() / 120
+        if notches:
+            self.player.set_volume(self.player.volume + round(notches * VOLUME_WHEEL_STEP))
 
     # -- fullscreen ---------------------------------------------------------------
 
@@ -393,6 +493,7 @@ class MainWindow(QMainWindow):
     def clear(self) -> None:
         """Close the current file and return to the empty start screen."""
         self.player.unload()
+        self._media_size = None
         self.setWindowTitle("Glancer")
         self.bar.set_kind(None)
         self._show_empty_state(True)
@@ -442,6 +543,7 @@ class MainWindow(QMainWindow):
             self.audio_info.hide()
             self.player.set_video_margins(0, 0, 0, 0)
         self._layout_overlays()
+        self._set_zoom(self._zoom)
         self.user_activity()
 
     def _metadata_changed(self, tags: dict[str, str]) -> None:

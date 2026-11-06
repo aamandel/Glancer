@@ -26,10 +26,13 @@ TOAST_MS = 3500
 class ClickClassifier(QObject):
     clicked = Signal()
     double_clicked = Signal()
+    dragged = Signal(float, float)  # movement in pixels since the last drag event
+    drag_changed = Signal(bool)  # a drag started (True) or ended (False)
 
     def __init__(self, target: QWidget):
         super().__init__(target)
         self._press: QPointF | None = None
+        self._last: QPointF | None = None
         self._dragging = False
         self._swallow_release = False
         # None = the system double-click interval (tests use a shorter one).
@@ -54,10 +57,18 @@ class ClickClassifier(QObject):
             return False
         assert isinstance(event, QMouseEvent)
         if kind == QEvent.Type.MouseMove:
-            if self._press is not None and not self._dragging:
+            if self._press is None or not (event.buttons() & Qt.MouseButton.LeftButton):
+                return False
+            if not self._dragging:
                 delta = event.position() - self._press
                 if abs(delta.x()) > CLICK_SLOP_PX or abs(delta.y()) > CLICK_SLOP_PX:
                     self._dragging = True
+                    self._last = self._press
+                    self.drag_changed.emit(True)
+            if self._dragging and self._last is not None:
+                step = event.position() - self._last
+                self._last = event.position()
+                self.dragged.emit(step.x(), step.y())
             return False
         if event.button() != Qt.MouseButton.LeftButton:
             return False
@@ -70,14 +81,36 @@ class ClickClassifier(QObject):
             self.double_clicked.emit()
         elif kind == QEvent.Type.MouseButtonRelease:
             was_click = self._press is not None and not self._dragging
+            was_dragging = self._dragging
             self._press = None
+            self._last = None
             self._dragging = False
+            if was_dragging:
+                self.drag_changed.emit(False)
             if self._swallow_release:
                 self._swallow_release = False
             elif was_click:
                 interval = self.interval_ms
                 self._pending.start(interval if interval is not None else QApplication.doubleClickInterval())
         return False
+
+
+class ZoomBadge(QLabel):
+    """"150%" in the top-right corner while zoomed in."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("ZoomBadge")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground)
+        self.hide()
+
+    def set_percent(self, percent: int) -> None:
+        self.setText(f"{percent}%")
+        self.adjustSize()
+        parent = self.parentWidget()
+        if parent is not None:
+            self.move(parent.width() - self.width() - 16, 16)
 
 
 class Toast(QLabel):

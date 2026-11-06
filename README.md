@@ -5,8 +5,8 @@ frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
 no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
 > Glancer is under active development (formerly **FrameStepper**). It plays
-> videos, photos and audio with frame stepping and a floating overlay; zoom,
-> navigation and editing are next.
+> videos, photos and audio with frame stepping, a floating overlay and zoom;
+> folder navigation and editing are next.
 
 ## Controls
 
@@ -26,6 +26,8 @@ movement (audio controls stay visible).
 | Speed | 1× button | [ and ] (Backspace resets) |
 | Loop | Loop button | L |
 | Rotate view | ⟳ button (photos), ≡ menu | R / Shift+R |
+| Zoom (100–1600%, around the cursor) | Mouse wheel | 0 resets to fit |
+| Pan while zoomed | Drag | — |
 
 ## Third-party binaries
 
@@ -58,7 +60,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 18 tests, ~17 s; needs a desktop session (opens windows)
+python -m pytest -q   # 22 tests, ~18 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application
