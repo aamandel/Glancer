@@ -644,6 +644,7 @@ class EditController:
         # The duration can arrive just after editing starts.
         window.player.duration_changed.connect(lambda _d: self.active and self._update_trim())
         window.player.position_changed.connect(self._position_changed)
+        window.player.seek_started.connect(self._other_seek)
         window.player.loop_changed.connect(lambda _loop: self._apply_bounds())
 
     # -- coordinates: source pixels <-> view -------------------------------------------
@@ -873,6 +874,11 @@ class EditController:
         self._show(seconds)
         self.w.player.seek(seconds)
 
+    def _other_seek(self, seconds: float) -> None:
+        # A seek that isn't ours replaces ours: stop holding the display for it.
+        if self._seek_target is not None and seconds != self._seek_target:
+            self._seek_target = None
+
     def _show(self, seconds: float) -> None:
         """Put the timeline dot and the strip's playhead at the same time."""
         self.strip.set_position(seconds)
@@ -886,7 +892,8 @@ class EditController:
         if self.strip._drag is not None or self._preview_target is not None:
             return True
         if self._seek_target is not None:
-            if abs(position - self._seek_target) <= self.frame_time and                     time.monotonic() < self._seek_deadline:
+            if (abs(position - self._seek_target) <= self.frame_time
+                    and time.monotonic() < self._seek_deadline):
                 self._seek_target = None  # arrived
             elif time.monotonic() < self._seek_deadline:
                 return True

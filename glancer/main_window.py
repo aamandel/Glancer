@@ -24,6 +24,8 @@ and nothing depends on which child has focus (overlay controls take no focus).
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -62,6 +64,7 @@ from glancer.file_ops import (
 from glancer.media_types import MediaKind
 from glancer.metadata import FileInfo, read_info
 from glancer.player.thread_bridge import ThreadBridge
+from glancer.win import associations
 from glancer.win.file_dialog import get_open_path
 from glancer.win.fullscreen import SavedWindow, enter_fullscreen, leave_fullscreen
 from glancer.player.mpv_player import MpvPlayer
@@ -238,6 +241,11 @@ class MainWindow(QMainWindow):
         menu.addAction("Fullscreen\tF11", self.toggle_fullscreen)
         menu.addSeparator()
         self._delete_action = menu.addAction("Delete\tDel", self.delete_current)
+        self._register_action = self._unregister_action = None
+        if portable_exe() is not None:  # the installer registers the installed copy itself
+            menu.addSeparator()
+            self._register_action = menu.addAction("Register file types…", self.register_file_types)
+            self._unregister_action = menu.addAction("Unregister file types", self.unregister_file_types)
         menu.aboutToShow.connect(self._refresh_menu)
         return menu
 
@@ -251,6 +259,12 @@ class MainWindow(QMainWindow):
         self._save_frame_action.setEnabled(
             self.player.kind is not None and self.player.kind.has_frames
         )
+        exe = portable_exe()
+        if exe is not None and self._register_action and self._unregister_action:
+            registered = associations.is_registered(exe)
+            self._register_action.setText(
+                "Choose default apps…" if registered else "Register file types…")
+            self._unregister_action.setEnabled(registered)
 
     def _build_sort_menu(self) -> QMenu:
         menu = QMenu("Sort order", self)
@@ -631,6 +645,23 @@ class MainWindow(QMainWindow):
         if self.player.path is not None:
             show_in_explorer(self.player.path)
 
+    def register_file_types(self) -> None:
+        """Portable build: offer Glancer in "Open with" and Default apps (HKCU)."""
+        exe = portable_exe()
+        if exe is None:
+            return
+        if not associations.is_registered(exe):
+            associations.register(exe)
+            QMessageBox.information(
+                self, "Glancer",
+                'Glancer is now listed under "Open with" for videos, music and photos.\n\n'
+                "Windows lets you pick the default app yourself: Default apps opens next.")
+        os.startfile(associations.DEFAULT_APPS_URI)
+
+    def unregister_file_types(self) -> None:
+        associations.unregister()
+        self.toast.show_message("Glancer's file type registration was removed")
+
     def toggle_info(self) -> None:
         if self.info_panel.isVisible():
             self.info_panel.hide()
@@ -941,3 +972,15 @@ class MainWindow(QMainWindow):
         self._settings.sync()
         event.accept()
         QApplication.quit()
+
+
+def portable_exe() -> Path | None:
+    """The running Glancer.exe if this is the portable build, else None.
+
+    None when running from source, or for an installed copy (Inno Setup puts
+    its uninstaller, unins000.exe, next to the exe).
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    return None if (exe.parent / "unins000.exe").exists() else exe

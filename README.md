@@ -4,10 +4,7 @@ Glancer is a private, fast Windows viewer for videos, photos, and audio, with
 frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
 no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
-> Glancer is under active development (formerly **FrameStepper**). It plays
-> videos, photos and audio with frame stepping, a floating overlay, zoom,
-> folder navigation, file operations and trim / crop editing; Windows
-> integration (default app, installer) is next.
+> Glancer was formerly called **FrameStepper**.
 
 ## Controls
 
@@ -77,7 +74,7 @@ Large binaries are not stored in git. Put these in `bin\` before running or buil
 | File | Source |
 | --- | --- |
 | `libmpv-2.dll` | [mpv-winbuild-cmake releases](https://github.com/shinchiro/mpv-winbuild-cmake/releases) (`mpv-dev-x86_64-*.7z`) or the official [mpv releases](https://github.com/mpv-player/mpv/releases) (`libmpv-*-x86_64-w64-mingw32-gpl.zip`) |
-| `ffmpeg.exe`, `ffprobe.exe` | A Windows FFmpeg build with libx264, FFV1, FLAC and AAC, e.g. [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) |
+| `ffmpeg.exe`, `ffprobe.exe` and their DLLs (`av*.dll`, `sw*.dll`) | A shared GPL FFmpeg build, e.g. [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) `ffmpeg-n9.0-latest-win64-gpl-shared-9.0.zip`: copy everything in its `bin\` except `ffplay.exe`, and its `LICENSE.txt` as `ffmpeg-LICENSE.txt` |
 
 ## Run from source
 
@@ -101,16 +98,40 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 36 tests, ~17 s; needs a desktop session (opens windows)
+python -m pytest -q   # 37 tests, ~17 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application
 
 ```powershell
+winget install JRSoftware.InnoSetup   # once; only needed for the installer
 .\build.ps1
 ```
 
-The standalone application is written to `dist\Glancer.exe`.
+`build.ps1` runs the tests, then builds:
+
+- `dist\Glancer\` - the portable app (`Glancer.exe` plus its `_internal\`
+  folder). A one-folder build starts faster than PyInstaller's one-file mode,
+  which would unpack ~460 MB on every start.
+- `dist\GlancerSetup.exe` - the installer, if Inno Setup is installed. It
+  installs to Program Files, adds a Start menu shortcut and registers Glancer
+  for its file types; uninstalling removes the files and those registry entries.
+
+The icon is drawn by `tools\make_icon.py` (writes `assets\`).
+
+## Default app
+
+Windows 11 doesn't let apps make themselves the default; Glancer registers as
+a candidate ("Open with" and Settings > Apps > Default apps) and you choose it there.
+
+- **Installed:** the installer registers it (for all users).
+- **Portable:** ≡ → Register file types… (for your account only). It then opens
+  Default apps. ≡ → Unregister file types removes exactly what it added.
+
+Registration lists Glancer for every supported extension under its own ProgIDs
+(`Glancer.Video`, `Glancer.Audio`, `Glancer.Image`); the full list of keys is
+in `glancer\win\associations.py`. Opening a second file from Explorer opens
+a new window, as Photos does.
 
 ## Folder order
 

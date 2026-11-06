@@ -72,6 +72,7 @@ class MpvPlayer(QObject):
     load_failed = Signal(str)
     duration_changed = Signal(float)
     position_changed = Signal(float)
+    seek_started = Signal(float)  # absolute seek requested (target seconds)
     pause_changed = Signal(bool)
     volume_changed = Signal(int)
     mute_changed = Signal(bool)
@@ -305,6 +306,7 @@ class MpvPlayer(QObject):
             return
         self._cancel_steps()
         mode = "absolute+exact" if exact else "absolute+keyframes"
+        self.seek_started.emit(float(seconds))
         self._mpv.command_async("seek", max(0.0, seconds), mode)
 
     def seek_relative(self, delta: float) -> None:

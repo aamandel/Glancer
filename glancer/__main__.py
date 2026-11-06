@@ -10,6 +10,12 @@ def main() -> int:
     app.setApplicationName("Glancer")
     app.setOrganizationName("Glancer")
 
+    from PySide6.QtGui import QIcon
+
+    from glancer.utils import bundled_dir
+
+    app.setWindowIcon(QIcon(str(bundled_dir() / "assets" / "glancer.ico")))
+
     from glancer.ui.theme import apply_theme
 
     apply_theme(app)  # parented to the app, so it lives as long as the app
