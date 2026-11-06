@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication
 
-from framestepper.main_window import MainWindow
+from glancer.main_window import MainWindow
 
 
 def main() -> int:

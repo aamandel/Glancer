@@ -11,7 +11,7 @@ if d3dcompiler_path.is_file():
     binaries.append((str(d3dcompiler_path), "."))
 
 a = Analysis(
-    ["run_framestepper.py"],
+    ["run_glancer.py"],
     pathex=[str(project_dir)],
     binaries=binaries,
     datas=[],
@@ -29,7 +29,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="FrameStepper",
+    name="Glancer",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

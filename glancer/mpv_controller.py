@@ -22,7 +22,7 @@ class MpvController(QObject):
         super().__init__(parent)
         self._mpv_path = mpv_path
         self._window_id = window_id
-        self._pipe_name = rf"\\.\pipe\framestepper-{os.getpid()}-{uuid.uuid4().hex}"
+        self._pipe_name = rf"\\.\pipe\glancer-{os.getpid()}-{uuid.uuid4().hex}"
         self._process: subprocess.Popen[bytes] | None = None
         self._socket = QLocalSocket(self)
         self._retry_timer = QTimer(self)
@@ -183,11 +183,14 @@ class MpvController(QObject):
     def seek(self, seconds: float) -> None:
         self.command("seek", seconds, "absolute", "exact")
 
+    # "seek" mode steps by seeking instead of briefly unpausing to play one
+    # frame. The default "play" mode can leave mpv playing after a burst of
+    # steps (e.g. a held arrow key).
     def step_forward(self) -> None:
-        self.command("frame-step")
+        self.command("frame-step", 1, "seek")
 
     def step_backward(self) -> None:
-        self.command("frame-back-step")
+        self.command("frame-step", -1, "seek")
 
     def close(self) -> None:
         self._closing = True

@@ -1,6 +1,6 @@
 # Third-party notices
 
-FrameStepper starts mpv as a separate playback process and communicates with it
+Glancer starts mpv as a separate playback process and communicates with it
 through mpv's documented JSON inter-process communication interface.
 
 The bundled Windows mpv executable comes from the

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from framestepper.utils import first_video_argument, format_time
+from glancer.utils import first_video_argument, format_time
 
 
 def test_format_time_under_an_hour() -> None:

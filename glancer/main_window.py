@@ -17,8 +17,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from framestepper.mpv_controller import MpvController
-from framestepper.utils import SUPPORTED_VIDEO_FILTER, find_mpv, format_time
+from glancer.mpv_controller import MpvController
+from glancer.utils import SUPPORTED_VIDEO_FILTER, find_mpv, format_time
 
 
 SLIDER_STEPS = 100_000
@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
         self._paused = True
         self._seeking = False
 
-        self.setWindowTitle("FrameStepper")
+        self.setWindowTitle("Glancer")
         self.resize(960, 620)
         self.setMinimumSize(640, 420)
         self._build_ui()
@@ -111,8 +111,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(
                 self,
                 "mpv is missing",
-                "FrameStepper could not find mpv.exe.\n\n"
-                "Place mpv.exe in the FrameStepper folder or its bin folder, "
+                "Glancer could not find mpv.exe.\n\n"
+                "Place mpv.exe in the Glancer folder or its bin folder, "
                 "then reopen the application.",
             )
             return
@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
             self._set_playback_controls_enabled(loaded)
             if loaded:
                 path = Path(str(value))
-                self.setWindowTitle(f"{path.name} — FrameStepper")
+                self.setWindowTitle(f"{path.name} — Glancer")
                 self.statusBar().showMessage(str(path))
 
     def _set_playback_controls_enabled(self, enabled: bool) -> None:

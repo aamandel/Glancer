@@ -1,8 +1,11 @@
-# FrameStepper
+# Glancer
 
-FrameStepper is a deliberately small Windows video player for inspecting a video
-one frame at a time. It uses mpv for accurate forward and backward frame-step
-commands and PySide6 for the interface.
+Glancer is a private, fast Windows viewer for videos, photos, and audio, with
+frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
+no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
+
+> Glancer is under active development (formerly **FrameStepper**). The current
+> build is the original frame-stepping video player under the new name.
 
 ## Controls
 
@@ -14,42 +17,44 @@ commands and PySide6 for the interface.
 | Next frame | One frame right | Right arrow or period |
 | Seek | Drag the scrub bar | — |
 
-Frame controls automatically pause the video. Backward stepping can take longer
-with highly compressed videos because mpv may need to decode forward from an
-earlier keyframe.
+## Third-party binaries
+
+Large binaries are not stored in git. Put these in `bin\` before running or building:
+
+| File | Source |
+| --- | --- |
+| `mpv.exe`, `libmpv-2.dll` | [mpv-winbuild-cmake releases](https://github.com/shinchiro/mpv-winbuild-cmake/releases) (`mpv-x86_64-*.7z` and `mpv-dev-x86_64-*.7z`) |
+| `ffmpeg.exe`, `ffprobe.exe` | A Windows FFmpeg build with libx264, FFV1, FLAC and AAC, e.g. [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) or [BtbN](https://github.com/BtbN/FFmpeg-Builds/releases) |
 
 ## Run from source
 
 1. Install Python 3.11 or newer.
-2. Put a Windows `mpv.exe` at `bin\mpv.exe`, or install mpv on `PATH`.
+2. Add the binaries above to `bin\`.
 3. Run:
 
    ```powershell
    python -m pip install -r requirements.txt
-   python run_framestepper.py
+   python run_glancer.py
    ```
 
-You can also pass a video directly:
+You can also pass a file directly:
 
 ```powershell
-python run_framestepper.py "C:\Videos\example.mp4"
+python run_glancer.py "C:\Videos\example.mp4"
+```
+
+## Tests
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python tools/make_test_media.py      # generates tests\media\ (git-ignored)
+python -m pytest -q
 ```
 
 ## Build the Windows application
-
-With `bin\mpv.exe` present, run:
 
 ```powershell
 .\build.ps1
 ```
 
-The standalone application is written to `dist\FrameStepper.exe`.
-
-## Use from Explorer
-
-1. Right-click a video and select **Open with → Choose another app**.
-2. Choose **Choose an app on your PC**.
-3. Select `FrameStepper.exe`.
-
-Windows will pass the selected video path to FrameStepper. Selecting “Always” is
-optional and makes it the default app for that file extension.
+The standalone application is written to `dist\Glancer.exe`.

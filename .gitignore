@@ -21,3 +21,6 @@ bin/
 # Local tooling
 .claude/
 .venv/
+
+# Generated test media (tools/make_test_media.py)
+tests/media/

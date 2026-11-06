@@ -8,7 +8,7 @@ if (-not (Test-Path -LiteralPath "bin\mpv.exe")) {
 
 python -m pip install -r requirements-dev.txt
 python -m pytest -q
-python -m PyInstaller --noconfirm --clean FrameStepper.spec
+python -m PyInstaller --noconfirm --clean Glancer.spec
 Copy-Item -LiteralPath "README.md" -Destination "dist\README.md" -Force
 Copy-Item -LiteralPath "THIRD_PARTY_NOTICES.md" -Destination "dist\THIRD_PARTY_NOTICES.md" -Force
 
