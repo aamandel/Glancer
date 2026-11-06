@@ -15,6 +15,9 @@ Overlay visibility:
 Zoom (zoom.py) is relative to fit, 100-1600%, and kept across files for the
 session; 0 resets it. The wheel zooms around the cursor; left-drag pans.
 
+Edit mode (ui/edit_mode.py) takes keys first while active, keeps the bar
+shown, and blocks navigation and delete until it is saved or cancelled.
+
 Keys are handled in keyPressEvent rather than QShortcut so held keys repeat
 and nothing depends on which child has focus (overlay controls take no focus).
 """
@@ -46,6 +49,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from glancer.editing.jobs import Job, JobRunner
 from glancer.explorer_sort import ExplorerSortQuery
 from glancer.folder import FolderNavigator
 from glancer.file_ops import (
@@ -63,6 +67,7 @@ from glancer.player.mpv_player import MpvPlayer
 from glancer.player.view import GlancerView
 from glancer.settings import Settings, SortKey, SortOrder
 from glancer.ui.control_bar import ControlBar
+from glancer.ui.edit_mode import EditController, JobIndicator
 from glancer.ui.overlays import (
     AudioInfo,
     ClickClassifier,
@@ -160,6 +165,10 @@ class MainWindow(QMainWindow):
         self._info_bridge: ThreadBridge[tuple[Path, FileInfo | None]] = ThreadBridge(
             self._info_ready, self
         )
+        self.jobs = JobRunner(self)
+        self.jobs.finished.connect(self._job_finished)
+        self.editor = EditController(self)
+        self.job_indicator = JobIndicator(self.media_area, self.jobs)
         self.toast = Toast(self.media_area)
 
         self._bar_opacity = QGraphicsOpacityEffect(self.bar)
@@ -218,6 +227,7 @@ class MainWindow(QMainWindow):
         self._explorer_action = menu.addAction("Show in Explorer", self.show_in_explorer)
         self._info_action = menu.addAction("File info\tI", self.toggle_info)
         self._save_frame_action = menu.addAction("Save frame as PNG", self.save_frame)
+        self._edit_action = menu.addAction("Edit…\tE", self.begin_edit)
         menu.addSeparator()
         self._rotate_right = menu.addAction("Rotate right\tR", lambda: self.player.rotate(90))
         self._rotate_left = menu.addAction("Rotate left\tShift+R", lambda: self.player.rotate(-90))
@@ -233,9 +243,11 @@ class MainWindow(QMainWindow):
 
     def _refresh_menu(self) -> None:
         has_file = self.player.path is not None
+        editing = self.editor.active
         for action in (self._explorer_action, self._info_action, self._delete_action,
                        self._rotate_left, self._rotate_right):
-            action.setEnabled(has_file)
+            action.setEnabled(has_file and (action is self._explorer_action or not editing))
+        self._edit_action.setEnabled(not editing and self.editor.can_edit(self.player.kind))
         self._save_frame_action.setEnabled(
             self.player.kind is not None and self.player.kind.has_frames
         )
@@ -294,6 +306,7 @@ class MainWindow(QMainWindow):
             (K.Key_BracketLeft, False, False): lambda: p.change_speed(-1),
             (K.Key_Backspace, False, False): lambda: p.set_speed(1.0),
             (K.Key_0, False, False): self.reset_zoom,
+            (K.Key_E, False, False): self.begin_edit,
         }
 
     def _connect_player(self) -> None:
@@ -334,6 +347,8 @@ class MainWindow(QMainWindow):
         self.info_panel.setGeometry(
             w - panel_width - BAR_MARGIN, BAR_MARGIN, panel_width, bar_top - 2 * BAR_MARGIN
         )
+        self.editor.layout(w, h, bar_top, BAR_MARGIN, panel_width)
+        self.job_indicator.move(16, 16)
         if self.player.kind is MediaKind.AUDIO:
             self._layout_audio(w, h, bar_top)
         else:
@@ -404,7 +419,7 @@ class MainWindow(QMainWindow):
 
     def _idle(self) -> None:
         kind = self.player.kind
-        if kind is None or kind is MediaKind.AUDIO:
+        if kind is None or kind is MediaKind.AUDIO or self.editor.active:
             return
         if self.bar.underMouse() or self._menus_open or self.bar.scrubbing:
             self._idle_timer.start(self.auto_hide_ms)
@@ -495,6 +510,7 @@ class MainWindow(QMainWindow):
         )
         if announce and changed and self._overlay_locked:
             self.toast.show_message(f"{state.percent}%")
+        self.editor.view_changed()
         self._update_cursor()
 
     def _update_cursor(self) -> None:
@@ -562,6 +578,10 @@ class MainWindow(QMainWindow):
             bool(mods & Qt.KeyboardModifier.ShiftModifier),
             bool(mods & Qt.KeyboardModifier.ControlModifier),
         )
+        if self.editor.active and not key[1] and not key[2] and not event.isAutoRepeat():
+            if self.editor.handle_key(key[0]):
+                event.accept()
+                return
         handler = self._keys.get(key)
         if handler is None:
             super().keyPressEvent(event)
@@ -598,7 +618,7 @@ class MainWindow(QMainWindow):
     def toggle_info(self) -> None:
         if self.info_panel.isVisible():
             self.info_panel.hide()
-        elif self.player.path is not None:
+        elif self.player.path is not None and not self.editor.active:
             self.info_panel.show()
             self.info_panel.raise_()
             self.toast.raise_()
@@ -641,7 +661,7 @@ class MainWindow(QMainWindow):
 
     def delete_current(self) -> None:
         path = self.player.path
-        if path is None:
+        if path is None or self.editor.active:
             return
         if not can_recycle(path):
             self.toast.show_message(
@@ -667,6 +687,39 @@ class MainWindow(QMainWindow):
             self.clear()
             self.toast.show_message(f"Moved {path.name} to the Recycle Bin")
 
+    # -- editing ----------------------------------------------------------------------
+
+    def begin_edit(self) -> None:
+        if self.player.path is not None and not self.editor.active:
+            self.editor.begin()
+
+    def confirm_overwrite(self, path: Path) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Overwrite original")
+        box.setText(f"Replace {path.name} with the edited version?")
+        box.setInformativeText("The original will be moved to the Recycle Bin.")
+        replace = box.addButton("Overwrite", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        box.exec()
+        return box.clickedButton() is replace
+
+    def confirm_close_with_jobs(self) -> bool:
+        answer = QMessageBox.question(
+            self, "Glancer", "An edit is still being saved. Cancel it and close?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _job_finished(self, job: Job, ok: bool) -> None:
+        self.editor.job_finished(job)
+        if ok:
+            self.toast.show_message(f"Saved {job.label}")
+        elif job.error != "Cancelled.":
+            self.toast.show_message(f"{job.label} wasn't saved. {job.error}")
+
     def save_frame(self) -> None:
         path, kind = self.player.path, self.player.kind
         if path is None or kind is None or not kind.has_frames:
@@ -689,6 +742,7 @@ class MainWindow(QMainWindow):
 
     def clear(self) -> None:
         """Close the current file and return to the empty start screen."""
+        self.editor.cancel()
         self.player.unload()
         self._media_size = None
         self._nav_anchor = None
@@ -716,6 +770,9 @@ class MainWindow(QMainWindow):
         """Open the previous (-1) or next (+1) media file in the folder."""
         current = self._nav_anchor
         if current is None:
+            return
+        if self.editor.active:
+            self.toast.show_message("Save or cancel the edit first.")
             return
         if self.navigator.folder != current.parent:
             self._enter_folder(current.parent)
@@ -804,6 +861,8 @@ class MainWindow(QMainWindow):
     # -- player events --------------------------------------------------------------
 
     def _file_loaded(self, path: Path, kind: MediaKind) -> None:
+        if self.editor.active and path != self.editor.path:
+            self.editor.cancel()
         self.setWindowTitle(f"{path.name} — Glancer")
         if self.navigator.folder != path.parent:
             self._enter_folder(path.parent)
@@ -849,6 +908,11 @@ class MainWindow(QMainWindow):
     # -- shutdown -----------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.jobs.busy:
+            if not self.confirm_close_with_jobs():
+                event.ignore()
+                return
+            self.jobs.cancel_all()
         QApplication.instance().removeEventFilter(self)
         self._info_bridge.close()
         self._idle_timer.stop()

@@ -13,8 +13,8 @@ button means for the current file.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QFontMetrics, QMouseEvent, QPainter, QPaintEvent
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QFontMetrics, QMouseEvent, QPainter, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 
 from glancer.media_types import MediaKind
 from glancer.player.mpv_player import SPEEDS
-from glancer.ui.theme import BAR_BACKGROUND, Glyph, icon_font
+from glancer.ui.theme import BAR_BACKGROUND, Glyph, accent_color, icon_font
 from glancer.utils import format_time
 
 SEEK_STEPS = 100_000
@@ -76,6 +76,42 @@ class SeekSlider(QSlider):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.markers: tuple[float | None, float | None] = (None, None)
+
+    def set_markers(self, start: float | None, end: float | None) -> None:
+        """Trim start/end as fractions of the duration (None hides a marker)."""
+        if (start, end) != self.markers:
+            self.markers = (start, end)
+            self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        super().paintEvent(event)
+        start, end = self.markers
+        if start is None and end is None:
+            return
+        option = QStyleOptionSlider()
+        self.initStyleOption(option)
+        handle = self.style().subControlRect(
+            QStyle.ComplexControl.CC_Slider, option, QStyle.SubControl.SC_SliderHandle, self
+        )
+        span = max(1, self.width() - handle.width())
+
+        def x_of(fraction: float) -> float:
+            return handle.width() / 2 + max(0.0, min(1.0, fraction)) * span
+
+        painter = QPainter(self)
+        accent = accent_color()
+        mid = self.height() / 2
+        left = x_of(start if start is not None else 0.0)
+        right = x_of(end if end is not None else 1.0)
+        fill = QColor(accent)
+        fill.setAlpha(90)
+        painter.fillRect(QRectF(left, mid - 3, max(1.0, right - left), 6), fill)
+        painter.setPen(QPen(accent, 2))
+        for fraction in (start, end):
+            if fraction is not None:
+                x = x_of(fraction)
+                painter.drawLine(QPointF(x, mid - 8), QPointF(x, mid + 8))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

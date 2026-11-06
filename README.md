@@ -6,7 +6,8 @@ no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
 > Glancer is under active development (formerly **FrameStepper**). It plays
 > videos, photos and audio with frame stepping, a floating overlay, zoom,
-> folder navigation and file operations; editing is next.
+> folder navigation, file operations and trim / crop editing; Windows
+> integration (default app, installer) is next.
 
 ## Controls
 
@@ -25,6 +26,7 @@ movement (audio controls stay visible).
 | Show in Explorer | ≡ menu | — |
 | Save the current frame as PNG (next to the video) | ≡ menu | — |
 | Delete (to the Recycle Bin, after confirming) | ≡ menu | Del |
+| Edit (trim, crop) | ≡ menu → Edit… | E (Esc cancels) |
 | Seek | Click or drag the scrub bar | — |
 | Fullscreen | Double-click the media, ⛶ button | F11 (Esc exits) |
 | Hide controls until H or a click | — | H |
@@ -34,6 +36,36 @@ movement (audio controls stay visible).
 | Rotate view | ⟳ button (photos), ≡ menu | R / Shift+R |
 | Zoom (100–1600%, around the cursor) | Mouse wheel | 0 resets to fit |
 | Pan while zoomed | Drag | — |
+
+## Editing
+
+Press E (or ≡ → Edit…) to edit the file in place. Edits never change the
+original unless you choose Overwrite.
+
+| Media | Trim | Crop |
+| --- | --- | --- |
+| Video | I sets the start, O the end, at the current frame | Drag the box or its handles; presets Free, Original, 16:9, 9:16, 4:3, 1:1; exact X / Y / W / H |
+| Audio | I / O at the current position | — |
+| Photo | — | As for video |
+
+Video modes:
+
+- **Precise** (default): frame-accurate cut with high-quality H.264 re-encoding.
+- **Fast Lossless**: copies the original video stream. The cut may shift
+  slightly (to the nearest keyframe). It can't crop.
+- **Precise Lossless**: frame-accurate cut with no quality loss (FFV1 in MKV).
+  Produces larger files, so it only saves copies.
+
+Audio uses Precise or Fast Lossless; WAV and FLAC are always cut exactly with
+no quality loss. Photos keep their EXIF data and colour profile; JPEGs are saved
+at quality 95.
+
+- **Save as copy** writes `name (edited).ext` next to the original.
+- **Overwrite original** asks first, writes and checks the new file, then moves
+  the original to the Recycle Bin. The creation date is kept; the modified
+  date is updated.
+- Videos and audio are saved in the background (progress at the top left, with
+  Cancel), so you can keep watching or start another edit.
 
 ## Third-party binaries
 
@@ -66,7 +98,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 30 tests, ~22 s; needs a desktop session (opens windows)
+python -m pytest -q   # 35 tests, ~26 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application

@@ -110,3 +110,18 @@ def pan_by(state: ZoomState, view: Size, media: Size, dx: float, dy: float) -> Z
 def mpv_values(state: ZoomState) -> tuple[float, float, float]:
     """(video-zoom, video-pan-x, video-pan-y) for mpv."""
     return math.log2(state.zoom), state.pan_x, state.pan_y
+
+
+def media_to_view(state: ZoomState, view: Size, media: Size, point: Point) -> Point:
+    """A point in media pixels -> view pixels, under the current zoom and pan."""
+    shown_w, shown_h = shown_size(view, media, state.zoom)
+    left = view[0] / 2 + state.pan_x * shown_w - shown_w / 2
+    top = view[1] / 2 + state.pan_y * shown_h - shown_h / 2
+    return left + point[0] / media[0] * shown_w, top + point[1] / media[1] * shown_h
+
+
+def view_to_media(state: ZoomState, view: Size, media: Size, point: Point) -> Point:
+    shown_w, shown_h = shown_size(view, media, state.zoom)
+    left = view[0] / 2 + state.pan_x * shown_w - shown_w / 2
+    top = view[1] / 2 + state.pan_y * shown_h - shown_h / 2
+    return (point[0] - left) / shown_w * media[0], (point[1] - top) / shown_h * media[1]

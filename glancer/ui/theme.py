@@ -111,6 +111,30 @@ def stylesheet(accent: QColor) -> str:
     background: rgba(255, 255, 255, 0.25); border-radius: 4px; min-height: 24px;
 }}
 #InfoPanel QScrollBar::add-line, #InfoPanel QScrollBar::sub-line {{ height: 0px; }}
+#EditPanel, #JobIndicator {{ background: rgba(20, 20, 20, 0.9); border-radius: 10px; }}
+#EditPanel QLabel, #JobIndicator QLabel {{ color: {TEXT}; background: transparent; }}
+#EditPanel QLabel#PanelTitle {{ font-size: 12pt; }}
+#EditPanel QLabel#Heading {{ color: {DIM_TEXT}; font-weight: 600; }}
+#EditPanel QLabel#Note {{ color: {DIM_TEXT}; }}
+#EditPanel QToolButton {{
+    color: {TEXT}; background: transparent; border: none; border-radius: 6px; padding: 4px 8px;
+}}
+#EditPanel QToolButton:hover {{ background: rgba(255, 255, 255, 0.12); }}
+#EditPanel QPushButton, #JobIndicator QPushButton {{
+    color: {TEXT}; background: rgba(255, 255, 255, 0.08); border: none; border-radius: 6px;
+    padding: 6px 12px;
+}}
+#EditPanel QPushButton:hover, #JobIndicator QPushButton:hover {{
+    background: rgba(255, 255, 255, 0.16);
+}}
+#EditPanel QPushButton:disabled {{ color: rgba(255, 255, 255, 0.35); }}
+#EditPanel QPushButton#Primary {{ color: {on_accent}; background: {a}; }}
+#EditPanel QPushButton#Primary:hover {{ background: {accent.lighter(112).name()}; }}
+#EditPanel QWidget:disabled {{ color: rgba(255, 255, 255, 0.35); }}
+#JobIndicator QProgressBar {{
+    background: rgba(255, 255, 255, 0.15); border: none; border-radius: 2px; max-height: 4px;
+}}
+#JobIndicator QProgressBar::chunk {{ background: {a}; border-radius: 2px; }}
 #Toast {{
     color: {TEXT}; background: rgba(20, 20, 20, 0.88); border-radius: 8px;
     padding: 10px 16px;
