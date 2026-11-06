@@ -34,7 +34,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QCloseEvent, QKeyEvent, QResizeEvent, QWheelEvent
+from PySide6.QtGui import QActionGroup, QCloseEvent, QKeyEvent, QResizeEvent, QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -44,10 +44,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from glancer.explorer_sort import ExplorerSortQuery
+from glancer.folder import FolderNavigator
 from glancer.media_types import MediaKind, open_dialog_filter
 from glancer.player.mpv_player import MpvPlayer
 from glancer.player.view import GlancerView
-from glancer.settings import Settings
+from glancer.settings import Settings, SortKey, SortOrder
 from glancer.ui.control_bar import ControlBar
 from glancer.ui.overlays import AudioInfo, ClickClassifier, EmptyState, Toast, ZoomBadge
 from glancer import zoom
@@ -61,6 +63,13 @@ VOLUME_WHEEL_STEP = 5
 SCRUB_PREVIEW_MS = 60
 KeyHandler = Callable[[], None]
 ZOOMABLE = (MediaKind.VIDEO, MediaKind.ANIMATED, MediaKind.IMAGE)
+SORT_KEY_LABELS = {
+    SortKey.NAME: "Name",
+    SortKey.CREATED: "Date created",
+    SortKey.MODIFIED: "Date modified",
+    SortKey.SIZE: "Size",
+    SortKey.TYPE: "Type",
+}
 
 
 class MediaArea(QWidget):
@@ -85,6 +94,13 @@ class MainWindow(QMainWindow):
         self._zoom = ZoomState()  # kept across files for the session
         self._media_size: tuple[float, float] | None = None
         self._cursor_hidden = False
+        # Folder order: an Explorer window's sort, else the saved default;
+        # the Sort order menu overrides it per folder for this session.
+        self.navigator = FolderNavigator(self)
+        self._nav_anchor: Path | None = None  # last file opened, even if it failed
+        self._explorer_queries: dict[Path, ExplorerSortQuery] = {}
+        self._folder_orders: dict[Path, SortOrder] = {}
+        self._order_sources: dict[Path, str] = {}
         self.auto_hide_ms = AUTO_HIDE_MS
 
         self.player = MpvPlayer(self._settings.volume, self._settings.muted, self)
@@ -157,6 +173,8 @@ class MainWindow(QMainWindow):
         b.forward_clicked.connect(lambda: self.arrow(1))
         b.play_clicked.connect(self.player.toggle_pause)
         b.rotate_clicked.connect(lambda: self.player.rotate(90))
+        b.previous_item_clicked.connect(lambda: self.navigate(-1))
+        b.next_item_clicked.connect(lambda: self.navigate(1))
         b.fullscreen_clicked.connect(self.toggle_fullscreen)
         b.mute_clicked.connect(lambda: self.player.set_muted(not self.player.muted))
         b.volume_requested.connect(self.player.set_volume)
@@ -177,8 +195,38 @@ class MainWindow(QMainWindow):
         self._rotate_right = menu.addAction("Rotate right\tR", lambda: self.player.rotate(90))
         self._rotate_left = menu.addAction("Rotate left\tShift+R", lambda: self.player.rotate(-90))
         menu.addSeparator()
+        menu.addMenu(self._build_sort_menu())
+        menu.addSeparator()
         menu.addAction("Hide controls\tH", self.toggle_overlay_lock)
         menu.addAction("Fullscreen\tF11", self.toggle_fullscreen)
+        return menu
+
+    def _build_sort_menu(self) -> QMenu:
+        menu = QMenu("Sort order", self)
+        self._sort_source_action = menu.addAction("")
+        self._sort_source_action.setEnabled(False)
+        menu.addSeparator()
+        self._sort_key_actions = {}
+        keys = QActionGroup(menu)
+        for key, label in SORT_KEY_LABELS.items():
+            action = menu.addAction(label, lambda k=key: self._choose_sort(key=k))
+            action.setCheckable(True)
+            keys.addAction(action)
+            self._sort_key_actions[key] = action
+        menu.addSeparator()
+        directions = QActionGroup(menu)
+        self._ascending_action = menu.addAction(
+            "Ascending", lambda: self._choose_sort(descending=False)
+        )
+        self._descending_action = menu.addAction(
+            "Descending", lambda: self._choose_sort(descending=True)
+        )
+        for action in (self._ascending_action, self._descending_action):
+            action.setCheckable(True)
+            directions.addAction(action)
+        menu.addSeparator()
+        menu.addAction("Set as default", self._save_default_sort)
+        menu.aboutToShow.connect(self._refresh_sort_menu)
         return menu
 
     def _build_keys(self) -> dict[tuple[int, bool, bool], KeyHandler]:
@@ -189,6 +237,8 @@ class MainWindow(QMainWindow):
             (K.Key_Space, False, False): p.toggle_pause,
             (K.Key_Right, False, False): lambda: self.arrow(1),
             (K.Key_Left, False, False): lambda: self.arrow(-1),
+            (K.Key_Right, True, False): lambda: self.navigate(1),
+            (K.Key_Left, True, False): lambda: self.navigate(-1),
             (K.Key_Period, False, False): lambda: p.step(1),
             (K.Key_Comma, False, False): lambda: p.step(-1),
             (K.Key_O, False, True): self.open_file_dialog,
@@ -218,6 +268,7 @@ class MainWindow(QMainWindow):
         p.loop_changed.connect(b.set_loop)
         p.metadata_changed.connect(self._metadata_changed)
         p.video_size_changed.connect(self._media_size_changed)
+        self.navigator.changed.connect(self._update_nav_buttons)
         p.volume_changed.connect(self._remember_volume)
         p.mute_changed.connect(self._remember_mute)
         b.set_volume(p.volume)
@@ -488,25 +539,107 @@ class MainWindow(QMainWindow):
             self.open_file(Path(filename))
 
     def open_file(self, path: Path) -> None:
-        self.player.load(path)
+        if self.player.load(path):
+            self._nav_anchor = path
+            folder = path.parent
+            if folder not in self._explorer_queries:
+                # Runs alongside mpv's loading; read in _enter_folder.
+                self._explorer_queries[folder] = ExplorerSortQuery(folder)
 
     def clear(self) -> None:
         """Close the current file and return to the empty start screen."""
         self.player.unload()
         self._media_size = None
+        self._nav_anchor = None
         self.setWindowTitle("Glancer")
         self.bar.set_kind(None)
         self._show_empty_state(True)
 
     def arrow(self, direction: int) -> None:
-        """Left/Right: frames on video, ±5 s on audio. (Photos: Phase 4.)"""
+        """Left/Right: frames on video, ±5 s on audio, previous/next item on photos."""
         kind = self.player.kind
         if kind is None:
+            if self._nav_anchor is not None:  # e.g. after a file failed to open
+                self.navigate(direction)
             return
         if kind.has_frames:
             self.player.step(direction)
         elif kind is MediaKind.AUDIO:
             self.player.seek_relative(direction * AUDIO_ARROW_SEEK_SECONDS)
+        else:
+            self.navigate(direction)
+
+    # -- folder navigation ----------------------------------------------------------
+
+    def navigate(self, direction: int) -> None:
+        """Open the previous (-1) or next (+1) media file in the folder."""
+        current = self._nav_anchor
+        if current is None:
+            return
+        if self.navigator.folder != current.parent:
+            self._enter_folder(current.parent)
+        target = self.navigator.neighbor(current, direction)
+        if target is None:
+            self.toast.show_message("First item" if direction < 0 else "Last item")
+        else:
+            self.open_file(target)
+
+    def _enter_folder(self, folder: Path) -> None:
+        self.navigator.set_folder(folder, self._order_for(folder))
+
+    def _order_for(self, folder: Path) -> SortOrder:
+        if folder in self._folder_orders:
+            return self._folder_orders[folder]
+        query = self._explorer_queries.get(folder)
+        explorer = query.result() if query is not None else None
+        if explorer is not None:
+            self._order_sources[folder] = "Following the open Explorer window"
+            order = explorer
+        else:
+            self._order_sources[folder] = "Default order"
+            order = self._settings.default_sort
+        self._folder_orders[folder] = order
+        return order
+
+    def _choose_sort(self, key: SortKey | None = None, descending: bool | None = None) -> None:
+        folder = self.navigator.folder
+        if folder is None:
+            return
+        old = self.navigator.order
+        order = SortOrder(
+            key if key is not None else old.key,
+            descending if descending is not None else old.descending,
+        )
+        self._folder_orders[folder] = order
+        self._order_sources[folder] = "Custom (this folder, until Glancer closes)"
+        self.navigator.set_order(order)
+        self._update_nav_buttons()
+
+    def _save_default_sort(self) -> None:
+        self._settings.default_sort = self.navigator.order
+        self.toast.show_message("Saved as the default sort order")
+
+    def _refresh_sort_menu(self) -> None:
+        folder = self.navigator.folder
+        order = self.navigator.order
+        self._sort_source_action.setText(
+            self._order_sources.get(folder, "Default order") if folder else "No folder open"
+        )
+        for key, action in self._sort_key_actions.items():
+            action.setChecked(key is order.key)
+            action.setEnabled(folder is not None)
+        self._ascending_action.setChecked(not order.descending)
+        self._descending_action.setChecked(order.descending)
+
+    def _update_nav_buttons(self) -> None:
+        current = self._nav_anchor
+        has_folder = current is not None and self.navigator.folder == current.parent
+        self.bar.previous_button.setEnabled(
+            has_folder and self.navigator.neighbor(current, -1) is not None  # type: ignore[arg-type]
+        )
+        self.bar.next_button.setEnabled(
+            has_folder and self.navigator.neighbor(current, 1) is not None  # type: ignore[arg-type]
+        )
 
     # -- scrubbing ----------------------------------------------------------------
 
@@ -531,6 +664,9 @@ class MainWindow(QMainWindow):
 
     def _file_loaded(self, path: Path, kind: MediaKind) -> None:
         self.setWindowTitle(f"{path.name} — Glancer")
+        if self.navigator.folder != path.parent:
+            self._enter_folder(path.parent)
+        self._update_nav_buttons()
         self._show_empty_state(False)
         self.bar.set_kind(kind)
         self.bar.set_path(str(path))

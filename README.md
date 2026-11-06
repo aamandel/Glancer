@@ -5,8 +5,8 @@ frame-by-frame video stepping. It keeps no history, shows no gallery, and stores
 no file paths. It uses mpv for playback and PySide6 (Qt) for the interface.
 
 > Glancer is under active development (formerly **FrameStepper**). It plays
-> videos, photos and audio with frame stepping, a floating overlay and zoom;
-> folder navigation and editing are next.
+> videos, photos and audio with frame stepping, a floating overlay, zoom
+> and folder navigation; file operations and editing are next.
 
 ## Controls
 
@@ -19,6 +19,8 @@ movement (audio controls stay visible).
 | Play or pause | Click the media, ▶ button | Space |
 | Previous / next frame (video) | Frame buttons | Left / Right arrow, comma / period |
 | Seek 5 s back / forward (audio) | ⏪ / ⏩ buttons | Left / Right arrow |
+| Previous / next file in the folder | ‹ / › buttons (photos) | Shift+Left / Right (Left / Right on photos) |
+| Sort order for previous / next | ≡ menu → Sort order | — |
 | Seek | Click or drag the scrub bar | — |
 | Fullscreen | Double-click the media, ⛶ button | F11 (Esc exits) |
 | Hide controls until H or a click | — | H |
@@ -60,7 +62,7 @@ python run_glancer.py "C:\Videos\example.mp4"
 ```powershell
 python -m pip install -r requirements-dev.txt
 python tools/make_test_media.py      # generates tests\media\ (git-ignored)
-python -m pytest -q   # 22 tests, ~18 s; needs a desktop session (opens windows)
+python -m pytest -q   # 26 tests, ~20 s; needs a desktop session (opens windows)
 ```
 
 ## Build the Windows application
@@ -70,3 +72,10 @@ python -m pytest -q   # 22 tests, ~18 s; needs a desktop session (opens windows)
 ```
 
 The standalone application is written to `dist\Glancer.exe`.
+
+## Folder order
+
+Previous / next follows the sort of an open Explorer window showing the same
+folder (Name, Date created, Date modified, Size or Type). Otherwise it uses the
+default order, Date created, which you can change with ≡ → Sort order → Set as
+default. Hidden files and subfolders are skipped.

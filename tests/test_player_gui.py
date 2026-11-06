@@ -161,7 +161,3 @@ def test_arrow_keys_by_kind(window: MainWindow, media) -> None:  # type: ignore[
     assert wait_until(lambda: window.player.position == pytest.approx(6.0, abs=0.05), 3)
     window.arrow(-1)
     assert wait_until(lambda: window.player.position == pytest.approx(1.0, abs=0.05), 3)
-
-    load(window, media("corners.png"))  # photos: next/previous item arrives in Phase 4
-    window.arrow(1)
-    assert window.player.pending_steps == 0 and window.player.path == media("corners.png")

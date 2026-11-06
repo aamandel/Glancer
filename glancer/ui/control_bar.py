@@ -234,8 +234,7 @@ class ControlBar(QWidget):
         self.seek_slider.sliderMoved.connect(self._seek_moved)
         self.seek_slider.sliderReleased.connect(self._seek_released)
 
-        # Phase 4 adds previous/next navigation.
-        self.previous_button.setEnabled(False)
+        self.previous_button.setEnabled(False)  # MainWindow enables them per file
         self.next_button.setEnabled(False)
         self.set_kind(None)
 

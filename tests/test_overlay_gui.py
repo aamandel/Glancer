@@ -6,6 +6,7 @@ Mouse input is sent as synthetic Qt events, so the real cursor never moves.
 from __future__ import annotations
 
 import math
+import shutil
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import QApplication
 from glancer import zoom
 from glancer.main_window import MainWindow
 from glancer.media_types import MediaKind
+from glancer.settings import SortKey
 from glancer.zoom import ZoomState
 from tests.conftest import CLICK_INTERVAL_MS, process_events, wait_until
 
@@ -222,3 +224,36 @@ def test_wheel_zoom_drag_pan_and_reset(window: MainWindow, media) -> None:  # ty
     assert window.player.get_property("video-zoom") == 0 and not window.zoom_badge.isVisible()
     QTest.keyClick(window, Qt.Key.Key_0)
     assert window.zoom_state == ZoomState()
+
+
+def test_folder_navigation(window: MainWindow, media, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    for source, name in [("corners.png", "a1.png"), ("exif_orient6.jpg", "a2.jpg"),
+                         ("frames_30fps.mp4", "a3.mp4"), ("tone.wav", "a10.wav")]:
+        shutil.copy(media(source), tmp_path / name)
+    load(window, tmp_path / "a1.png")
+    window._refresh_sort_menu()
+    assert window._sort_source_action.text() == "Default order"  # no Explorer window here
+    window._choose_sort(key=SortKey.NAME)
+    assert not window.bar.previous_button.isEnabled() and window.bar.next_button.isEnabled()
+
+    def go(key: Qt.Key, shift: bool, expected: str) -> None:
+        loaded: list[Path] = []
+        window.player.file_loaded.connect(lambda p, _k: loaded.append(p))
+        mods = Qt.KeyboardModifier.ShiftModifier if shift else Qt.KeyboardModifier.NoModifier
+        QTest.keyClick(window, key, mods)
+        assert wait_until(lambda: bool(loaded), 8) and loaded[0].name == expected
+
+    go(Qt.Key.Key_Right, False, "a2.jpg")  # plain arrows change items on photos
+    go(Qt.Key.Key_Right, False, "a3.mp4")
+    QTest.keyClick(window, Qt.Key.Key_Right)  # ...but step frames on video
+    assert wait_until(lambda: window.player.pending_steps == 0)
+    assert window.player.path == tmp_path / "a3.mp4"
+    go(Qt.Key.Key_Right, True, "a10.wav")  # natural order: a3 before a10
+    QTest.keyClick(window, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+    assert window.toast.isVisible() and window.toast.text() == "Last item"
+    assert window.player.path == tmp_path / "a10.wav"
+
+    window._choose_sort(descending=True)
+    go(Qt.Key.Key_Right, True, "a3.mp4")
+    window.bar.next_button.click()
+    assert wait_until(lambda: window.player.path == tmp_path / "a2.jpg", 8)
